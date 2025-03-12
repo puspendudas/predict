@@ -73,7 +73,6 @@ ssh $SERVER_USER@$SERVER << EOF
     else
         # Create directory and copy current files
         mkdir -p predict
-        exit
 EOF
 
     if [[ "$push_to_github" != "y" && "$push_to_github" != "Y" ]]; then
@@ -93,7 +92,6 @@ ssh $SERVER_USER@$SERVER << EOF
         echo "✓ Deployment successful!"
     else
         echo "✗ Deployment failed!"
-        exit 1
     fi
 EOF
 
