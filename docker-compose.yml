@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGODB_URL=mongodb+srv://puspenduofficial:4xwjcNbgRv6QVA0H@predictdata.hfw7l.mongodb.net/
+    volumes:
+      - ./app:/app
+
