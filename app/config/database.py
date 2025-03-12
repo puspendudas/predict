@@ -11,37 +11,13 @@ class Database:
         self.client = MongoClient(os.getenv("MONGODB_URL"))
         self.db = self.client[os.getenv("DATABASE_NAME")]
         self.collection = self.db[os.getenv("COLLECTION_NAME")]
-        self.prediction_history = self.db["prediction_history"]
-        self.model_accuracy = self.db["model_accuracy"]
-        self.prediction_details = self.db["prediction_details"]
+        self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
+        self.model_accuracy = self.db[os.getenv("MODEL_ACCURACY_COLLECTION")]
         
         # Create indexes
-        self._create_indexes()
-
-    def _create_indexes(self):
-        """Create necessary indexes for better query performance."""
-        try:
-            # Results collection
-            self.collection.create_index("mid", unique=True)
-            self.collection.create_index("timestamp")
-            
-            # Prediction history
-            self.prediction_history.create_index("mid", unique=True)
-            self.prediction_history.create_index("timestamp")
-            self.prediction_history.create_index("model_version")
-            
-            # Prediction details
-            self.prediction_details.create_index("mid", unique=True)
-            self.prediction_details.create_index("timestamp")
-            self.prediction_details.create_index("model_version")
-            self.prediction_details.create_index("verified")
-            
-            # Model accuracy
-            self.model_accuracy.create_index("timestamp")
-            self.model_accuracy.create_index("model_version")
-            
-        except Exception as e:
-            logging.error(f"Error creating indexes: {str(e)}")
+        self.collection.create_index("mid", unique=True)
+        self.prediction_history.create_index("mid")
+        self.prediction_history.create_index("timestamp")
 
     def insert_result(self, data):
         try:
@@ -65,113 +41,49 @@ class Database:
             "verified": False
         })
 
-    def save_prediction_details(self, prediction_data: dict) -> bool:
-        """Save detailed prediction information."""
-        try:
-            result = self.prediction_details.update_one(
-                {"mid": prediction_data["mid"]},
-                {"$set": prediction_data},
-                upsert=True
-            )
-            return result.acknowledged
-        except Exception as e:
-            logging.error(f"Error saving prediction details: {str(e)}")
-            return False
-
-    def get_prediction_details(self, mid: str) -> dict:
-        """Retrieve detailed prediction information."""
-        try:
-            return self.prediction_details.find_one({"mid": mid}, {"_id": 0})
-        except Exception as e:
-            logging.error(f"Error getting prediction details: {str(e)}")
-            return {}
-
-    def update_prediction_result(self, mid: str, actual_result: str) -> bool:
-        """Update prediction result and accuracy metrics."""
-        try:
-            # Get prediction details
-            prediction = self.prediction_details.find_one({"mid": mid, "verified": False})
-            if not prediction:
-                return None
-            
-            was_correct = prediction["prediction"] == actual_result
-            
-            # Update prediction details
-            self.prediction_details.update_one(
+    def update_prediction_result(self, mid: str, actual_value: str):
+        prediction = self.prediction_history.find_one({"mid": mid, "verified": False})
+        if prediction:
+            was_correct = prediction["predicted_value"] == actual_value
+            self.prediction_history.update_one(
                 {"_id": prediction["_id"]},
                 {
                     "$set": {
-                        "actual_result": actual_result,
+                        "actual_value": actual_value,
                         "verified": True,
-                        "was_correct": was_correct,
-                        "verification_time": datetime.now().isoformat()
+                        "was_correct": was_correct
                     }
                 }
             )
-            
             return was_correct
-            
-        except Exception as e:
-            logging.error(f"Error updating prediction result: {str(e)}")
-            return None
+        return None
 
-    def update_accuracy_metrics(self, metrics_data: dict) -> bool:
-        """Update detailed accuracy metrics."""
+    def get_accuracy_metrics(self, last_n_days=7):
         try:
-            result = self.model_accuracy.insert_one({
-                **metrics_data,
-                "recorded_at": datetime.now().isoformat()
-            })
-            return result.acknowledged
-        except Exception as e:
-            logging.error(f"Error updating accuracy metrics: {str(e)}")
-            return False
-
-    def get_accuracy_metrics(self, last_n_days=None, model_version=None):
-        """Get detailed accuracy metrics with filtering options."""
-        try:
-            match_condition = {"verified": True}
+            match_condition = {
+                "verified": True
+            }
             
             if last_n_days is not None:
                 match_condition["timestamp"] = {
                     "$gte": (datetime.now() - timedelta(days=last_n_days)).isoformat()
                 }
-            
-            if model_version:
-                match_condition["model_version"] = model_version
                 
             pipeline = [
                 {"$match": match_condition},
                 {
                     "$group": {
-                        "_id": "$model_version",
+                        "_id": None,
                         "total": {"$sum": 1},
-                        "correct": {"$sum": {"$cond": ["$was_correct", 1, 0]}},
-                        "fallback_total": {"$sum": {"$cond": ["$fallback_used", 1, 0]}},
-                        "fallback_correct": {
-                            "$sum": {
-                                "$cond": [
-                                    {"$and": ["$fallback_used", "$was_correct"]},
-                                    1,
-                                    0
-                                ]
-                            }
-                        },
-                        "avg_confidence": {"$avg": "$confidence"}
+                        "correct": {"$sum": {"$cond": ["$was_correct", 1, 0]}}
                     }
                 }
             ]
-            
-            results = list(self.prediction_details.aggregate(pipeline))
-            
-            if not results:
-                return {"total": 0, "correct": 0, "fallback_total": 0, "fallback_correct": 0, "avg_confidence": 0}
-            
-            return results[0]
-            
+            result = list(self.prediction_history.aggregate(pipeline))
+            return result[0] if result else {"total": 0, "correct": 0}
         except Exception as e:
             logging.error(f"Error getting accuracy metrics: {str(e)}")
-            return {"total": 0, "correct": 0, "fallback_total": 0, "fallback_correct": 0, "avg_confidence": 0}
+            return {"total": 0, "correct": 0}
 
     def save_accuracy_metrics(self, accuracy: float, total_predictions: int):
         try:
