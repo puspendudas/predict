@@ -2,8 +2,8 @@
 $SERVER = "103.49.70.245"
 $SERVER_USER = "root"
 $GITHUB_REPO = "git@github.com:puspendudas/predict.git"
-$CONTAINER_NAME = "api-gateway"
-$IMAGE_NAME = "apigateway"
+$CONTAINER_NAME = "api-predict"
+$IMAGE_NAME = "apipredict"
 $PORT = "8080"
 
 # Function to print colored messages
