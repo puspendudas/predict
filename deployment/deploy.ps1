@@ -69,16 +69,16 @@ if [[ \$(docker images --format '{{.Repository}}' | grep -w "${IMAGE_NAME}") ]];
 fi
 
 # Remove existing code directory
-rm -rf terminal
+rm -rf predict
 
 # Clone from GitHub if push was done, else use direct copy
 if [[ "$push_to_github" = "y" || "$push_to_github" = "Y" ]]; then
-    git clone ${GITHUB_REPO} terminal
+    git clone ${GITHUB_REPO} predict
 else
-    mkdir -p terminal
+    mkdir -p predict
 fi
 
-cd terminal
+cd predict
 
 # Build and run Docker container
 docker build -t ${IMAGE_NAME} .
@@ -100,7 +100,7 @@ $sshCommands | Out-File -FilePath $sshCommandsFile -Encoding ASCII
 if ($push_to_github -ne "y" -and $push_to_github -ne "Y") {
     # For direct file transfer, use rsync instead of scp
     Write-ColoredMessage "Copying files directly to server..." "Yellow"
-    & rsync -av --exclude '.git' --exclude 'node_modules' ./ "${SERVER_USER}@${SERVER}:~/terminal/"
+    & rsync -av --exclude '.git' --exclude 'node_modules' ./ "${SERVER_USER}@${SERVER}:~/predict/"
 }
 
 # Execute SSH commands correctly in PowerShell
