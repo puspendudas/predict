@@ -4,8 +4,8 @@
 SERVER="103.49.70.245"
 SERVER_USER="root"
 GITHUB_REPO="git@github.com:puspendudas/predict.git"
-CONTAINER_NAME="api-gateway"
-IMAGE_NAME="apigateway"
+CONTAINER_NAME="api-predict"
+IMAGE_NAME="apipredict"
 PORT="8080"
 
 # Colors for output
@@ -65,24 +65,24 @@ ssh $SERVER_USER@$SERVER << EOF
     fi
     
     # Remove existing code directory
-    rm -rf terminal
+    rm -rf predict
     
     if [[ "$push_to_github" == "y" || "$push_to_github" == "Y" ]]; then
         # Clone from GitHub
         git clone $GITHUB_REPO
     else
         # Create directory and copy current files
-        mkdir -p terminal
+        mkdir -p predict
         exit
 EOF
 
     if [[ "$push_to_github" != "y" && "$push_to_github" != "Y" ]]; then
         # Use rsync to copy local files to server
-        rsync -avz --exclude '.git' --exclude 'node_modules' ./ $SERVER_USER@$SERVER:~/terminal/
+        rsync -avz --exclude '.git' --exclude 'node_modules' ./ $SERVER_USER@$SERVER:~/predict/
     fi
 
 ssh $SERVER_USER@$SERVER << EOF
-    cd terminal
+    cd predict
     
     # Build and run Docker container
     docker build -t $IMAGE_NAME .
