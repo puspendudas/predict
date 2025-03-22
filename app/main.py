@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException
-from .predict import PredictionService
-from .models import PredictionResponse, ModelAccuracy
+from app.predict import PredictionService
+from app.models import PredictionResponse, ModelAccuracy
 import asyncio
 import logging
 from datetime import datetime
