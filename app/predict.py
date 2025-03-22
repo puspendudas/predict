@@ -180,18 +180,23 @@ class PredictionService:
 
     def predict_next_rounds(self, endpoint_type='teen20', n_predictions=2) -> List[str]:
         """Generate predictions for the next rounds."""
-        historical_data = self.db.get_last_n_results(100, endpoint_type)
-        if len(historical_data) < 10:
-            return ["0"] * n_predictions
-            
-        X, y = self.prepare_data(historical_data, self.sequence_length)
-        current_time = datetime.now().isoformat()
-        
-        if len(X) > 0:
-            # Ensure model is fitted
+        try:
+            historical_data = self.db.get_last_n_results(100, endpoint_type)
+            if len(historical_data) < self.min_samples_for_training:
+                logging.warning(f"Insufficient historical data for {endpoint_type}: {len(historical_data)} samples")
+                return ["0"] * n_predictions
+                
+            # Always ensure model is fitted before making predictions
             if not hasattr(self.model, "fitted_") or not self.model.fitted_:
+                logging.info(f"Training model for {endpoint_type} with {len(historical_data)} samples")
                 self.update_model(endpoint_type)
             
+            X, y = self.prepare_data(historical_data, self.sequence_length)
+            if len(X) == 0:
+                logging.warning(f"No valid sequences found for {endpoint_type}")
+                return ["0"] * n_predictions
+            
+            current_time = datetime.now().isoformat()
             last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
             
             predictions = []
@@ -202,7 +207,7 @@ class PredictionService:
                 
                 if confidence < self.min_confidence_threshold:
                     logging.warning(
-                        f"Low confidence prediction for {endpoint_type}: {confidence}. "
+                        f"Low confidence prediction for {endpoint_type}: {confidence:.2f}. "
                         f"Consider retraining model."
                     )
                 
@@ -217,8 +222,10 @@ class PredictionService:
                 self.last_predictions[pred_mid] = pred
             
             return predictions
-        
-        return ["0"] * n_predictions
+            
+        except Exception as e:
+            logging.error(f"Error making predictions for {endpoint_type}: {str(e)}")
+            return ["0"] * n_predictions
 
     def start_verification_loop(self, endpoint_type: str) -> None:
         """Start the continuous verification process."""
