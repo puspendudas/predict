@@ -37,6 +37,7 @@
 - [x] Developed the ML model and saved it as `model.pkl`.
 - [x] Created FastAPI service to expose prediction endpoint.
 - [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/teen20
+- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/dt20
 - [ ] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu
 - [ ] Implemented MongoDB integration (optional, pending decision).
 - [ ] Dockerized the application for deployment.

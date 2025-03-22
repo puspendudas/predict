@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 class GameType(str, Enum):
     TEEN20 = "teen20"
     LUCKY7EU = "lucky7eu"
+    DT20 = "dt20"
 
 @app.on_event("startup")
 async def startup_event():

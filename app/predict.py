@@ -16,7 +16,8 @@ class PredictionService:
         self.last_predictions = {}
         self.endpoints = {
             'teen20': os.getenv("TEEN20_API_URL"),
-            'lucky7eu': os.getenv("LUCKY7EU_API_URL")
+            'lucky7eu': os.getenv("LUCKY7EU_API_URL"),
+            'dt20': os.getenv("DT20_API_URL")
         }
         self.verification_interval = 5  # seconds
         self.min_confidence_threshold = 0.4
@@ -41,6 +42,10 @@ class PredictionService:
                 if not data.get("data", {}).get("data", {}).get("data", {}).get("result"):
                     raise ValueError("Invalid Lucky7EU response format")
                 results = data["data"]["data"]["data"]["result"]
+            elif endpoint_type == 'dt20':
+                if not data.get("data", {}).get("data", {}).get("result"):
+                    raise ValueError("Invalid DT20 response format")
+                results = data["data"]["data"]["result"]
             else:
                 if not data.get("data", {}).get("data", {}).get("data", {}).get("result"):
                     raise ValueError("Invalid Teen20 response format")
