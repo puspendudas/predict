@@ -43,9 +43,9 @@ class PredictionService:
                     raise ValueError("Invalid Lucky7EU response format")
                 results = data["data"]["data"]["data"]["result"]
             elif endpoint_type == 'dt20':
-                if not data.get("data", {}).get("data", {}).get("result"):
+                if not data.get("data", {}).get("data", {}).get("data", {}).get("result"):
                     raise ValueError("Invalid DT20 response format")
-                results = data["data"]["data"]["result"]
+                results = data["data"]["data"]["data"]["result"]
             else:
                 if not data.get("data", {}).get("data", {}).get("data", {}).get("result"):
                     raise ValueError("Invalid Teen20 response format")
