@@ -1,4 +1,4 @@
-# Project Requirements
+# **Project Requirements**
 
 ## **Project Overview**
 - Develop a machine learning model for predictive analysis.
