@@ -4,12 +4,24 @@ import os
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Optional
+import certifi
+import ssl
 
 load_dotenv()
 
 class Database:
     def __init__(self):
-        self.client = MongoClient(os.getenv("MONGODB_URL"))
+        # Create SSL context
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        ssl_context.verify_mode = ssl.CERT_REQUIRED
+        
+        # Connect with SSL settings
+        self.client = MongoClient(
+            os.getenv("MONGODB_URL"),
+            tlsCAFile=certifi.where(),
+            tls=True,
+            tlsAllowInvalidCertificates=False
+        )
         self.db = self.client[os.getenv("DATABASE_NAME")]
         self.collection = self.db[os.getenv("COLLECTION_NAME")]
         self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
