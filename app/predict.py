@@ -8,6 +8,11 @@ from datetime import datetime
 import logging
 from typing import Dict, List, Tuple
 import time
+import urllib3
+import certifi
+
+# Disable SSL warnings
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 class PredictionService:
     def __init__(self):
@@ -40,8 +45,14 @@ class PredictionService:
                 'Origin': 'https://terminal.apiserver.digital',
                 'Referer': 'https://terminal.apiserver.digital/',
             }
+            
+            # Try with SSL verification first, fall back to unverified if needed
+            try:
+                response = requests.get(api_url, headers=headers, verify=certifi.where())
+            except requests.exceptions.SSLError:
+                logging.warning(f"SSL verification failed for {endpoint_type}, falling back to unverified connection")
+                response = requests.get(api_url, headers=headers, verify=False)
                 
-            response = requests.get(api_url, headers=headers, verify=False)  # verify=False to handle SSL issues if any
             response.raise_for_status()
             data = response.json()
             

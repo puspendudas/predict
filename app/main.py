@@ -7,6 +7,7 @@ import logging
 from datetime import datetime
 from enum import Enum
 import httpx
+import certifi
 
 app = FastAPI()
 
@@ -108,9 +109,17 @@ async def proxy_request(game_type: str):
             'Referer': 'https://terminal.apiserver.digital/',
         }
         
-        async with httpx.AsyncClient(verify=False) as client:
-            response = await client.get(api_url, headers=headers)
-            response.raise_for_status()
-            return response.json()
+        # Try with SSL verification first, fall back to unverified if needed
+        try:
+            async with httpx.AsyncClient(verify=certifi.where()) as client:
+                response = await client.get(api_url, headers=headers)
+                response.raise_for_status()
+                return response.json()
+        except httpx.SSLError:
+            logger.warning(f"SSL verification failed for {game_type}, falling back to unverified connection")
+            async with httpx.AsyncClient(verify=False) as client:
+                response = await client.get(api_url, headers=headers)
+                response.raise_for_status()
+                return response.json()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
