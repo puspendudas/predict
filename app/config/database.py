@@ -11,27 +11,32 @@ load_dotenv()
 
 class Database:
     def __init__(self):
-        # Create SSL context
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        ssl_context.verify_mode = ssl.CERT_REQUIRED
-        
-        # Connect with SSL settings
-        self.client = MongoClient(
-            os.getenv("MONGODB_URL"),
-            tlsCAFile=certifi.where(),
-            tls=True,
-            tlsAllowInvalidCertificates=False
-        )
-        self.db = self.client[os.getenv("DATABASE_NAME")]
-        self.collection = self.db[os.getenv("COLLECTION_NAME")]
-        self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
-        self.model_accuracy = self.db[os.getenv("MODEL_ACCURACY_COLLECTION")]
-        
-        # Create indexes
-        self.collection.create_index([("mid", 1), ("endpoint_type", 1)], unique=True)
-        self.prediction_history.create_index([("mid", 1), ("endpoint_type", 1)])
-        self.prediction_history.create_index("timestamp")
-        self.model_accuracy.create_index([("endpoint_type", 1), ("timestamp", -1)])
+        try:
+            # Connect with simplified SSL settings
+            self.client = MongoClient(
+                os.getenv("MONGODB_URL"),
+                tlsCAFile=certifi.where(),
+                tlsAllowInvalidCertificates=True  # Temporarily allow invalid certificates for testing
+            )
+            
+            # Test the connection
+            self.client.server_info()
+            
+            self.db = self.client[os.getenv("DATABASE_NAME")]
+            self.collection = self.db[os.getenv("COLLECTION_NAME")]
+            self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
+            self.model_accuracy = self.db[os.getenv("MODEL_ACCURACY_COLLECTION")]
+            
+            # Create indexes
+            self.collection.create_index([("mid", 1), ("endpoint_type", 1)], unique=True)
+            self.prediction_history.create_index([("mid", 1), ("endpoint_type", 1)])
+            self.prediction_history.create_index("timestamp")
+            self.model_accuracy.create_index([("endpoint_type", 1), ("timestamp", -1)])
+            
+            logging.info("Successfully connected to MongoDB")
+        except Exception as e:
+            logging.error(f"Failed to connect to MongoDB: {str(e)}")
+            raise
 
     def insert_result(self, data: Dict, endpoint_type: str) -> Optional[Dict]:
         """Insert a new result into the database."""
