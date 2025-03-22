@@ -1,5 +1,5 @@
 # Configuration
-$SERVER = "148.113.44.123"
+$SERVER = "103.49.70.244"
 $SERVER_USER = "root"
 $GITHUB_REPO = "git@github.com:puspendudas/predict.git"
 $CONTAINER_NAME = "api-predict"
