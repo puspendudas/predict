@@ -1,13 +1,16 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, Any
+from datetime import datetime
 
 class Result(BaseModel):
     mid: str
     result: str
 
 class PredictionResponse(BaseModel):
-    current_results: List[Result]
+    current_results: List[Dict[str, Any]]
     predictions: List[str]
+    game_type: str
+    timestamp: str = datetime.now().isoformat()
 
 class PredictionHistory(BaseModel):
     mid: str
@@ -17,6 +20,7 @@ class PredictionHistory(BaseModel):
     was_correct: bool
 
 class ModelAccuracy(BaseModel):
-    timestamp: str
     accuracy: float
     total_predictions: int
+    game_type: str
+    timestamp: str = datetime.now().isoformat()

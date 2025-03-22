@@ -1,9 +1,10 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from .predict import PredictionService
 from .models import PredictionResponse, ModelAccuracy
 import asyncio
 import logging
 from datetime import datetime
+from enum import Enum
 
 app = FastAPI()
 prediction_service = PredictionService()
@@ -12,56 +13,69 @@ prediction_service = PredictionService()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def fetch_data_cron():
-    while True:
-        try:
-            results = prediction_service.fetch_latest_data()
-            if results:
-                logger.info(f"Data fetch cron: Got {len(results)} results at {datetime.now().isoformat()}")
-        except Exception as e:
-            logger.error(f"Data fetch cron error: {str(e)}")
-        await asyncio.sleep(25)  # Run every 25 seconds
-
-async def accuracy_check_cron():
-    while True:
-        try:
-            metrics = prediction_service.check_and_update_accuracy()
-            
-            # Save accuracy metrics to database
-            prediction_service.db.save_accuracy_metrics(
-                accuracy=metrics['accuracy'],
-                total_predictions=metrics['total_predictions']
-            )
-            
-            logger.info(
-                f"Accuracy check cron: Current accuracy {metrics['accuracy']:.2f} " 
-                f"(Total: {metrics['total_predictions']}, Correct: {metrics['correct_predictions']}) "
-                f"at {datetime.now().isoformat()}"
-            )
-        except Exception as e:
-            logger.error(f"Accuracy check cron error: {str(e)}")
-        await asyncio.sleep(300)  # Run every 5 minutes
+class GameType(str, Enum):
+    TEEN20 = "teen20"
+    LUCKY7EU = "lucky7eu"
 
 @app.on_event("startup")
 async def startup_event():
-    # Start both cron tasks
-    asyncio.create_task(fetch_data_cron())
-    asyncio.create_task(accuracy_check_cron())
+    """Start verification loops for both games on application startup."""
+    for game_type in GameType:
+        prediction_service.start_verification_loop(game_type)
+        logger.info(f"Started verification loop for {game_type}")
 
-@app.get("/predict", response_model=PredictionResponse)
-async def get_prediction():
-    current_results = prediction_service.fetch_latest_data()
-    predictions = prediction_service.predict_next_rounds()
-    return PredictionResponse(
-        current_results=current_results,
-        predictions=predictions
-    )
+@app.get("/predict/{game_type}", response_model=PredictionResponse)
+async def get_prediction(game_type: GameType):
+    """Get predictions for a specific game type."""
+    try:
+        current_results = prediction_service.fetch_latest_data(game_type)
+        predictions = prediction_service.predict_next_rounds(game_type)
+        return PredictionResponse(
+            current_results=current_results,
+            predictions=predictions,
+            game_type=game_type
+        )
+    except Exception as e:
+        logger.error(f"Error getting prediction for {game_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/accuracy", response_model=ModelAccuracy)
-async def get_model_accuracy():
-    metrics = prediction_service.db.get_accuracy_metrics()
-    return ModelAccuracy(
-        timestamp=datetime.now().isoformat(),
-        accuracy=metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0,
-        total_predictions=metrics["total"]
-    )
+@app.get("/accuracy/{game_type}", response_model=ModelAccuracy)
+async def get_model_accuracy(game_type: GameType):
+    """Get accuracy metrics for a specific game type."""
+    try:
+        metrics = prediction_service.db.get_accuracy_metrics(game_type)
+        return ModelAccuracy(
+            timestamp=datetime.now().isoformat(),
+            accuracy=metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0,
+            total_predictions=metrics["total"],
+            game_type=game_type
+        )
+    except Exception as e:
+        logger.error(f"Error getting accuracy for {game_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/performance/{game_type}")
+async def get_model_performance(game_type: GameType):
+    """Get detailed model performance metrics for a specific game type."""
+    try:
+        # Get recent accuracy metrics
+        metrics = prediction_service.db.get_accuracy_metrics(game_type)
+        
+        # Get consecutive incorrect predictions
+        consecutive_incorrect = prediction_service.db.get_consecutive_incorrect_predictions(game_type)
+        
+        # Get performance history
+        performance_history = prediction_service.db.get_model_performance_history(game_type)
+        
+        return {
+            "current_accuracy": metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0,
+            "total_predictions": metrics["total"],
+            "correct_predictions": metrics["correct"],
+            "consecutive_incorrect": consecutive_incorrect,
+            "performance_history": performance_history,
+            "game_type": game_type,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error getting performance metrics for {game_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))

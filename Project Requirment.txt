@@ -1,0 +1,54 @@
+# Project Requirements
+
+## **Project Overview**
+- Develop a machine learning model for predictive analysis.
+- Use Python with Scikit-learn for training the model.
+- Save the trained model as a `.pkl` file for later use.
+- Implement a FastAPI-based service to expose an API for predictions.
+- Deploy the project using Docker.
+- Integrate MongoDB as a database if required for data storage.
+
+## **Technical Stack**
+- **Programming Language:** Python 3.9+
+- **Frameworks/Libraries:**
+  - Scikit-learn (for ML model training)
+  - Pickle (for model serialization)
+  - FastAPI (for API development)
+  - Uvicorn (for ASGI server)
+  - NumPy & Pandas (for data handling)
+  - Pydantic (for request validation)
+  - Docker (for containerization)
+  - MongoDB (for optional data storage)
+
+## **Features**
+- Train an ML model on structured data.
+- Save and load the trained model efficiently.
+- Develop RESTful API endpoints for making predictions.
+- Accept input as JSON and return predictions in real time.
+- Deploy the project as a containerized service using Docker.
+
+## **Deployment & Infrastructure**
+- Use Docker to containerize the project.
+- Optionally host the application on a VPS (e.g., Rocky Linux 9.5).
+- Use an external MongoDB service for storing past predictions (if required).
+
+## **Current Project Status**
+- [x] Defined project scope and technical stack.
+- [x] Developed the ML model and saved it as `model.pkl`.
+- [x] Created FastAPI service to expose prediction endpoint.
+- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/teen20
+- [ ] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu
+- [ ] Implemented MongoDB integration (optional, pending decision).
+- [ ] Dockerized the application for deployment.
+- [ ] Deployed on a VPS and tested API performance.
+
+## **Next Steps**
+- Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu as well
+- Finalize MongoDB integration if needed.
+- Write Dockerfile and create a Docker container.
+- Deploy the service on a cloud or on-premise server.
+- Perform testing and optimizations for scalability.
+
+---
+This document serves as a guideline for project development and tracking progress effectively.
+
