@@ -32,8 +32,16 @@ class PredictionService:
             api_url = self.endpoints.get(endpoint_type)
             if not api_url:
                 raise ValueError(f"Invalid endpoint type: {endpoint_type}")
+            
+            # Add headers to handle CORS
+            headers = {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json',
+                'Origin': 'https://terminal.apiserver.digital',
+                'Referer': 'https://terminal.apiserver.digital/',
+            }
                 
-            response = requests.get(api_url)
+            response = requests.get(api_url, headers=headers, verify=False)  # verify=False to handle SSL issues if any
             response.raise_for_status()
             data = response.json()
             
@@ -52,6 +60,9 @@ class PredictionService:
                 results = data["data"]["data"]["data"]["result"]
             
             return results
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Network error fetching data from {endpoint_type}: {str(e)}")
+            return []
         except Exception as e:
             logging.error(f"Error fetching data from {endpoint_type}: {str(e)}")
             return []

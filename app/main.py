@@ -1,12 +1,24 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from app.predict import PredictionService
 from app.models import PredictionResponse, ModelAccuracy
 import asyncio
 import logging
 from datetime import datetime
 from enum import Enum
+import httpx
 
 app = FastAPI()
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 prediction_service = PredictionService()
 
 # Configure logging
@@ -79,4 +91,26 @@ async def get_model_performance(game_type: GameType):
         }
     except Exception as e:
         logger.error(f"Error getting performance metrics for {game_type}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/proxy/{game_type}")
+async def proxy_request(game_type: str):
+    """Proxy endpoint to handle API requests."""
+    try:
+        api_url = prediction_service.endpoints.get(game_type)
+        if not api_url:
+            raise HTTPException(status_code=400, detail=f"Invalid game type: {game_type}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0',
+            'Accept': 'application/json',
+            'Origin': 'https://terminal.apiserver.digital',
+            'Referer': 'https://terminal.apiserver.digital/',
+        }
+        
+        async with httpx.AsyncClient(verify=False) as client:
+            response = await client.get(api_url, headers=headers)
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
