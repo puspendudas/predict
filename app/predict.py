@@ -135,14 +135,32 @@ class PredictionService:
 
             accuracy = metrics["correct"] / metrics["total"]
             
-            # Check if model needs updating
+            # Get recent accuracy trend
+            trend = self.db.get_recent_accuracy_trend(endpoint_type, days=7)
+            
+            # Check if model needs updating based on multiple factors
             should_update = (
                 accuracy < self.accuracy_threshold or
-                self.db.get_consecutive_incorrect_predictions(endpoint_type) >= 5
+                self.db.get_consecutive_incorrect_predictions(endpoint_type) >= 5 or
+                (trend["avg_accuracy"] < self.accuracy_threshold and trend["samples"] >= 5) or
+                (trend["min_accuracy"] < 0.3 and trend["samples"] >= 10)
             )
             
             if should_update:
+                logging.info(
+                    f"Model update triggered for {endpoint_type}. "
+                    f"Current accuracy: {accuracy:.2f}, "
+                    f"Average accuracy: {trend['avg_accuracy']:.2f}, "
+                    f"Min accuracy: {trend['min_accuracy']:.2f}"
+                )
                 self.update_model(endpoint_type)
+                
+                # Save the new accuracy metrics
+                self.db.save_accuracy_metrics(
+                    accuracy=accuracy,
+                    total_predictions=metrics["total"],
+                    endpoint_type=endpoint_type
+                )
                 
         except Exception as e:
             logging.error(f"Error checking model for {endpoint_type}: {str(e)}")
@@ -175,10 +193,21 @@ class PredictionService:
                 random_state=42
             )
             
+            # Train the model
             self.model.fit(X, y)
+            
+            # Calculate and log the accuracy
+            accuracy = self.calculate_accuracy(X, y)
             logging.info(
                 f"Model updated for {endpoint_type} with {len(X)} samples. "
-                f"Current accuracy: {self.calculate_accuracy(X, y):.2f}"
+                f"Current accuracy: {accuracy:.2f}"
+            )
+            
+            # Save the accuracy metrics
+            self.db.save_accuracy_metrics(
+                accuracy=accuracy,
+                total_predictions=len(X),
+                endpoint_type=endpoint_type
             )
             
         except Exception as e:

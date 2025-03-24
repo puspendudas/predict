@@ -38,10 +38,10 @@
 - [x] Created FastAPI service to expose prediction endpoint.
 - [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/teen20
 - [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/dt20
-- [ ] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu
-- [ ] Implemented MongoDB integration (optional, pending decision).
-- [ ] Dockerized the application for deployment.
-- [ ] Deployed on a VPS and tested API performance.
+- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu
+- [x] Implemented MongoDB integration (optional, pending decision).
+- [x] Dockerized the application for deployment.
+- [x] Deployed on a VPS and tested API performance.
 
 ## **Next Steps**
 - Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu as well

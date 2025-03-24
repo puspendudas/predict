@@ -173,24 +173,76 @@ class Database:
                 "timestamp": datetime.now().isoformat(),
                 "accuracy": accuracy,
                 "total_predictions": total_predictions,
-                "endpoint_type": endpoint_type
+                "endpoint_type": endpoint_type,
+                "model_version": "1.0",  # Track model versions
+                "training_samples": total_predictions,
+                "last_update": datetime.now().isoformat()
             })
         except Exception as e:
             logging.error(f"Error saving accuracy metrics: {str(e)}")
             return None
 
-    def get_model_performance_history(self, endpoint_type: str, days: int = 7) -> List[Dict]:
-        """Get historical model performance data."""
+    def get_model_performance_history(self, endpoint_type: str, limit: int = 100) -> List[Dict]:
+        """Get historical performance data for the model."""
         try:
             return list(self.model_accuracy.find(
-                {
-                    "endpoint_type": endpoint_type,
-                    "timestamp": {
-                        "$gte": (datetime.now() - timedelta(days=days)).isoformat()
-                    }
-                },
+                {"endpoint_type": endpoint_type},
                 {"_id": 0}
-            ).sort("timestamp", 1))
+            ).sort("timestamp", -1).limit(limit))
         except Exception as e:
             logging.error(f"Error getting model performance history: {str(e)}")
+            return []
+
+    def get_recent_accuracy_trend(self, endpoint_type: str, days: int = 7) -> Dict:
+        """Get recent accuracy trend for model improvement decisions."""
+        try:
+            cutoff_date = datetime.now() - timedelta(days=days)
+            pipeline = [
+                {
+                    "$match": {
+                        "endpoint_type": endpoint_type,
+                        "timestamp": {"$gte": cutoff_date.isoformat()}
+                    }
+                },
+                {
+                    "$group": {
+                        "_id": None,
+                        "avg_accuracy": {"$avg": "$accuracy"},
+                        "min_accuracy": {"$min": "$accuracy"},
+                        "max_accuracy": {"$max": "$accuracy"},
+                        "total_predictions": {"$sum": "$total_predictions"},
+                        "samples": {"$sum": 1}
+                    }
+                }
+            ]
+            result = list(self.model_accuracy.aggregate(pipeline))
+            return result[0] if result else {
+                "avg_accuracy": 0,
+                "min_accuracy": 0,
+                "max_accuracy": 0,
+                "total_predictions": 0,
+                "samples": 0
+            }
+        except Exception as e:
+            logging.error(f"Error getting recent accuracy trend: {str(e)}")
+            return {
+                "avg_accuracy": 0,
+                "min_accuracy": 0,
+                "max_accuracy": 0,
+                "total_predictions": 0,
+                "samples": 0
+            }
+
+    def get_prediction_history(self, endpoint_type: str, limit: int = 100) -> List[Dict]:
+        """Get detailed prediction history for analysis."""
+        try:
+            return list(self.prediction_history.find(
+                {
+                    "endpoint_type": endpoint_type,
+                    "verified": True
+                },
+                {"_id": 0}
+            ).sort("timestamp", -1).limit(limit))
+        except Exception as e:
+            logging.error(f"Error getting prediction history: {str(e)}")
             return []
