@@ -242,7 +242,7 @@ class PredictionService:
     def predict_next_rounds(self, endpoint_type='teen20', n_predictions=2) -> List[str]:
         """Generate predictions for the next rounds."""
         try:
-            historical_data = self.db.get_last_n_results(100, endpoint_type)
+            historical_data = self.db.get_last_n_results(10000, endpoint_type)
             if len(historical_data) < self.min_samples_for_training:
                 logging.warning(f"Insufficient historical data for {endpoint_type}: {len(historical_data)} samples")
                 return ["0"] * n_predictions
