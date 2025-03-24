@@ -59,8 +59,8 @@ class Database:
             {"_id": 0}
         ).sort("mid", -1).limit(n))
 
-    def save_prediction(self, mid: str, predicted_value: str, timestamp: str, endpoint_type: str) -> Optional[Dict]:
-        """Save a new prediction."""
+    def save_prediction(self, mid: str, predicted_value: str, timestamp: str, endpoint_type: str, confidence: float = 0.0) -> Optional[Dict]:
+        """Save a new prediction with confidence score."""
         try:
             return self.prediction_history.insert_one({
                 "mid": mid,
@@ -68,7 +68,9 @@ class Database:
                 "timestamp": timestamp,
                 "endpoint_type": endpoint_type,
                 "verified": False,
-                "confidence": None  # Will be updated when verified
+                "confidence": confidence,
+                "verification_timestamp": None,
+                "was_correct": None
             })
         except Exception as e:
             logging.error(f"Error saving prediction: {str(e)}")
@@ -98,6 +100,17 @@ class Database:
                         }
                     }
                 )
+                
+                # Update accuracy metrics immediately
+                metrics = self.get_accuracy_metrics(endpoint_type, last_n_days=1)
+                if metrics["total"] > 0:
+                    accuracy = metrics["correct"] / metrics["total"]
+                    self.save_accuracy_metrics(
+                        accuracy=accuracy,
+                        total_predictions=metrics["total"],
+                        endpoint_type=endpoint_type
+                    )
+                
                 return True
             return False
         except Exception as e:

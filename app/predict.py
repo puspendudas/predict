@@ -111,7 +111,8 @@ class PredictionService:
                             f"Prediction verification for {endpoint_type} - MID: {result['mid']}, "
                             f"Predicted: {prediction['predicted_value']}, "
                             f"Actual: {result['result']}, "
-                            f"Correct: {was_correct}"
+                            f"Correct: {was_correct}, "
+                            f"Confidence: {prediction.get('confidence', 0):.2f}"
                         )
                         
                         # Check if we need to retrain the model
@@ -119,6 +120,15 @@ class PredictionService:
                     
                     # Save the actual result
                     self.db.insert_result(result, endpoint_type)
+                
+                # Log current accuracy metrics
+                metrics = self.db.get_accuracy_metrics(endpoint_type, last_n_days=1)
+                if metrics["total"] > 0:
+                    accuracy = metrics["correct"] / metrics["total"]
+                    logging.info(
+                        f"Current accuracy for {endpoint_type}: {accuracy:.2f} "
+                        f"({metrics['correct']}/{metrics['total']} correct predictions)"
+                    )
                 
                 time.sleep(self.verification_interval)
             except Exception as e:
@@ -254,7 +264,7 @@ class PredictionService:
             for _ in range(n_predictions):
                 pred_proba = self.model.predict_proba([last_sequence])[0]
                 pred = str(np.argmax(pred_proba))
-                confidence = np.max(pred_proba)
+                confidence = float(np.max(pred_proba))
                 
                 if confidence < self.min_confidence_threshold:
                     logging.warning(
@@ -265,11 +275,11 @@ class PredictionService:
                 predictions.append(pred)
                 last_sequence = np.append(last_sequence[1:], int(pred))
             
-            # Save predictions
+            # Save predictions with confidence scores
             next_mid = str(int(historical_data[0]["mid"]) + 1)
-            for i, pred in enumerate(predictions):
+            for i, (pred, confidence) in enumerate(zip(predictions, [float(np.max(self.model.predict_proba([last_sequence])[0])) for _ in range(n_predictions)])):
                 pred_mid = str(int(next_mid) + i)
-                self.db.save_prediction(pred_mid, pred, current_time, endpoint_type)
+                self.db.save_prediction(pred_mid, pred, current_time, endpoint_type, confidence)
                 self.last_predictions[pred_mid] = pred
             
             return predictions
