@@ -24,3 +24,11 @@ class ModelAccuracy(BaseModel):
     total_predictions: int
     game_type: str
     timestamp: str = datetime.now().isoformat()
+
+class DateRangeResults(BaseModel):
+    game_type: str
+    start_date: str
+    end_date: str
+    results: List[Dict[str, Any]]
+    total_count: int
+    timestamp: str = datetime.now().isoformat()

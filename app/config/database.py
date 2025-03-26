@@ -89,7 +89,13 @@ class Database:
         try:
             prediction = self.get_prediction(mid, endpoint_type)
             if prediction:
-                self.prediction_history.update_one(
+                logging.info(
+                    f"Updating prediction in database - MID: {mid}, "
+                    f"Endpoint: {endpoint_type}, "
+                    f"Was Correct: {was_correct}"
+                )
+                
+                update_result = self.prediction_history.update_one(
                     {"_id": prediction["_id"]},
                     {
                         "$set": {
@@ -101,6 +107,13 @@ class Database:
                     }
                 )
                 
+                if update_result.modified_count == 0:
+                    logging.error(
+                        f"Failed to update prediction in database - MID: {mid}, "
+                        f"Endpoint: {endpoint_type}"
+                    )
+                    return False
+                
                 # Update accuracy metrics immediately
                 metrics = self.get_accuracy_metrics(endpoint_type, last_n_days=1)
                 if metrics["total"] > 0:
@@ -111,7 +124,16 @@ class Database:
                         endpoint_type=endpoint_type
                     )
                 
+                logging.info(
+                    f"Successfully updated prediction in database - MID: {mid}, "
+                    f"Endpoint: {endpoint_type}"
+                )
                 return True
+                
+            logging.warning(
+                f"No unverified prediction found to update - MID: {mid}, "
+                f"Endpoint: {endpoint_type}"
+            )
             return False
         except Exception as e:
             logging.error(f"Error updating prediction result: {str(e)}")
@@ -258,4 +280,21 @@ class Database:
             ).sort("timestamp", -1).limit(limit))
         except Exception as e:
             logging.error(f"Error getting prediction history: {str(e)}")
+            return []
+
+    def get_results_by_date_range(self, endpoint_type: str, start_date: str, end_date: str) -> List[Dict]:
+        """Get results for a specific endpoint within a date range."""
+        try:
+            return list(self.collection.find(
+                {
+                    "endpoint_type": endpoint_type,
+                    "timestamp": {
+                        "$gte": start_date,
+                        "$lte": end_date
+                    }
+                },
+                {"_id": 0}
+            ).sort("timestamp", 1))
+        except Exception as e:
+            logging.error(f"Error getting results by date range: {str(e)}")
             return []

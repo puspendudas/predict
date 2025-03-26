@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from app.predict import PredictionService
-from app.models import PredictionResponse, ModelAccuracy
+from app.models import PredictionResponse, ModelAccuracy, DateRangeResults
 import asyncio
 import logging
 from datetime import datetime
@@ -122,4 +122,24 @@ async def proxy_request(game_type: str):
                 response.raise_for_status()
                 return response.json()
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/results/{game_type}", response_model=DateRangeResults)
+async def get_results_by_date_range(
+    game_type: GameType,
+    start_date: str,
+    end_date: str
+):
+    """Get results for a specific game type within a date range."""
+    try:
+        results = prediction_service.db.get_results_by_date_range(game_type, start_date, end_date)
+        return DateRangeResults(
+            game_type=game_type,
+            start_date=start_date,
+            end_date=end_date,
+            results=results,
+            total_count=len(results)
+        )
+    except Exception as e:
+        logger.error(f"Error getting results for {game_type}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))

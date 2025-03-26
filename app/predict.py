@@ -98,22 +98,30 @@ class PredictionService:
                     if prediction:
                         was_correct = prediction["predicted_value"] == result["result"]
                         
+                        # Log before update
+                        logging.info(
+                            f"Verifying prediction for {endpoint_type} - MID: {result['mid']}, "
+                            f"Predicted: {prediction['predicted_value']}, "
+                            f"Actual: {result['result']}, "
+                            f"Correct: {was_correct}"
+                        )
+                        
                         # Update prediction result in database
-                        self.db.update_prediction_result(
+                        update_success = self.db.update_prediction_result(
                             result["mid"],
                             result["result"],
                             endpoint_type,
                             was_correct
                         )
                         
-                        # Log the verification result
-                        logging.info(
-                            f"Prediction verification for {endpoint_type} - MID: {result['mid']}, "
-                            f"Predicted: {prediction['predicted_value']}, "
-                            f"Actual: {result['result']}, "
-                            f"Correct: {was_correct}, "
-                            f"Confidence: {prediction.get('confidence', 0):.2f}"
-                        )
+                        if update_success:
+                            logging.info(
+                                f"Successfully updated prediction for {endpoint_type} - MID: {result['mid']}"
+                            )
+                        else:
+                            logging.error(
+                                f"Failed to update prediction for {endpoint_type} - MID: {result['mid']}"
+                            )
                         
                         # Check if we need to retrain the model
                         self.check_and_update_model(endpoint_type)
@@ -129,6 +137,8 @@ class PredictionService:
                         f"Current accuracy for {endpoint_type}: {accuracy:.2f} "
                         f"({metrics['correct']}/{metrics['total']} correct predictions)"
                     )
+                else:
+                    logging.info(f"No verified predictions yet for {endpoint_type}")
                 
                 time.sleep(self.verification_interval)
             except Exception as e:
