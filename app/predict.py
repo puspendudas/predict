@@ -80,17 +80,22 @@ class PredictionService:
 
     def verify_predictions(self, endpoint_type: str) -> None:
         """Continuously verify predictions against actual results."""
+        logging.info(f"Starting verification loop for {endpoint_type}")
         while True:
             try:
                 # Fetch latest results
                 results = self.fetch_latest_data(endpoint_type)
                 if not results:
+                    logging.warning(f"No results fetched for {endpoint_type}, retrying in {self.verification_interval} seconds")
                     time.sleep(self.verification_interval)
                     continue
+
+                logging.info(f"Fetched {len(results)} results for {endpoint_type}")
 
                 # Verify each result against our predictions
                 for result in results:
                     if "mid" not in result or "result" not in result:
+                        logging.warning(f"Invalid result format for {endpoint_type}: {result}")
                         continue
                     
                     # Check if we have a prediction for this result
@@ -122,12 +127,15 @@ class PredictionService:
                             logging.error(
                                 f"Failed to update prediction for {endpoint_type} - MID: {result['mid']}"
                             )
-                        
-                        # Check if we need to retrain the model
-                        self.check_and_update_model(endpoint_type)
+                    else:
+                        logging.info(f"No prediction found for {endpoint_type} - MID: {result['mid']}")
                     
                     # Save the actual result
-                    self.db.insert_result(result, endpoint_type)
+                    save_result = self.db.insert_result(result, endpoint_type)
+                    if save_result:
+                        logging.info(f"Saved result for {endpoint_type} - MID: {result['mid']}")
+                    else:
+                        logging.error(f"Failed to save result for {endpoint_type} - MID: {result['mid']}")
                 
                 # Log current accuracy metrics
                 metrics = self.db.get_accuracy_metrics(endpoint_type, last_n_days=1)

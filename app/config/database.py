@@ -62,7 +62,8 @@ class Database:
     def save_prediction(self, mid: str, predicted_value: str, timestamp: str, endpoint_type: str, confidence: float = 0.0) -> Optional[Dict]:
         """Save a new prediction with confidence score."""
         try:
-            return self.prediction_history.insert_one({
+            logging.info(f"Saving prediction for {endpoint_type} - MID: {mid}, Value: {predicted_value}, Confidence: {confidence}")
+            result = self.prediction_history.insert_one({
                 "mid": mid,
                 "predicted_value": predicted_value,
                 "timestamp": timestamp,
@@ -72,17 +73,32 @@ class Database:
                 "verification_timestamp": None,
                 "was_correct": None
             })
+            if result.inserted_id:
+                logging.info(f"Successfully saved prediction for {endpoint_type} - MID: {mid}")
+                return result
+            else:
+                logging.error(f"Failed to save prediction for {endpoint_type} - MID: {mid}")
+                return None
         except Exception as e:
             logging.error(f"Error saving prediction: {str(e)}")
             return None
 
     def get_prediction(self, mid: str, endpoint_type: str) -> Optional[Dict]:
         """Get a prediction by MID and endpoint type."""
-        return self.prediction_history.find_one({
-            "mid": mid,
-            "endpoint_type": endpoint_type,
-            "verified": False
-        })
+        try:
+            prediction = self.prediction_history.find_one({
+                "mid": mid,
+                "endpoint_type": endpoint_type,
+                "verified": False
+            })
+            if prediction:
+                logging.info(f"Found unverified prediction for {endpoint_type} - MID: {mid}")
+            else:
+                logging.info(f"No unverified prediction found for {endpoint_type} - MID: {mid}")
+            return prediction
+        except Exception as e:
+            logging.error(f"Error getting prediction: {str(e)}")
+            return None
 
     def update_prediction_result(self, mid: str, actual_value: str, endpoint_type: str, was_correct: bool) -> bool:
         """Update a prediction with its actual result."""
@@ -114,6 +130,12 @@ class Database:
                     )
                     return False
                 
+                logging.info(
+                    f"Successfully updated prediction in database - MID: {mid}, "
+                    f"Endpoint: {endpoint_type}, "
+                    f"Modified count: {update_result.modified_count}"
+                )
+                
                 # Update accuracy metrics immediately
                 metrics = self.get_accuracy_metrics(endpoint_type, last_n_days=1)
                 if metrics["total"] > 0:
@@ -123,11 +145,8 @@ class Database:
                         total_predictions=metrics["total"],
                         endpoint_type=endpoint_type
                     )
+                    logging.info(f"Updated accuracy metrics for {endpoint_type}: {accuracy:.2f}")
                 
-                logging.info(
-                    f"Successfully updated prediction in database - MID: {mid}, "
-                    f"Endpoint: {endpoint_type}"
-                )
                 return True
                 
             logging.warning(
