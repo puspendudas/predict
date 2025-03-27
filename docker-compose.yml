@@ -3,6 +3,7 @@ version: '3.8'
 services:
   app:
     build: .
+    container_name: api-predict
     ports:
       - "7000:7000"
     depends_on:

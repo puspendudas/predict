@@ -10,6 +10,8 @@ from typing import Dict, List, Tuple
 import time
 import urllib3
 import certifi
+import asyncio
+import threading
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -31,6 +33,7 @@ class PredictionService:
         self.max_samples_for_training = 500
         self.sequence_length = 8
         self.prediction_window = 2
+        self.verification_threads = {}
 
     def fetch_latest_data(self, endpoint_type='teen20') -> List[Dict]:
         try:
@@ -306,12 +309,21 @@ class PredictionService:
             logging.error(f"Error making predictions for {endpoint_type}: {str(e)}")
             return ["0"] * n_predictions
 
-    def start_verification_loop(self, endpoint_type: str) -> None:
-        """Start the continuous verification process."""
-        import threading
-        thread = threading.Thread(
-            target=self.verify_predictions,
-            args=(endpoint_type,),
-            daemon=True
-        )
+    def start_verification_loop(self, endpoint_type: str):
+        """Start a verification loop in a separate thread."""
+        if endpoint_type in self.verification_threads and self.verification_threads[endpoint_type].is_alive():
+            logging.info(f"Verification loop already running for {endpoint_type}")
+            return
+
+        def verification_worker():
+            while True:
+                try:
+                    self.verify_predictions(endpoint_type)
+                except Exception as e:
+                    logging.error(f"Error in verification loop for {endpoint_type}: {str(e)}")
+                    time.sleep(self.verification_interval)
+
+        thread = threading.Thread(target=verification_worker, daemon=True)
         thread.start()
+        self.verification_threads[endpoint_type] = thread
+        logging.info(f"Started verification loop for {endpoint_type}")

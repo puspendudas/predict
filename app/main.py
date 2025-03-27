@@ -82,9 +82,10 @@ async def get_model_performance(game_type: GameType):
         performance_history = prediction_service.db.get_model_performance_history(game_type)
         
         return {
-            "current_accuracy": metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0,
+            "current_accuracy": metrics["accuracy"],
             "total_predictions": metrics["total"],
             "correct_predictions": metrics["correct"],
+            "incorrect_predictions": metrics["incorrect"],
             "consecutive_incorrect": consecutive_incorrect,
             "performance_history": performance_history,
             "game_type": game_type,

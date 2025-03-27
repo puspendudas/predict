@@ -177,16 +177,21 @@ class Database:
                     "$group": {
                         "_id": None,
                         "total": {"$sum": 1},
-                        "correct": {"$sum": {"$cond": ["$was_correct", 1, 0]}},
+                        "correct": {"$sum": {"$cond": [{"$eq": ["$was_correct", True]}, 1, 0]}},
+                        "incorrect": {"$sum": {"$cond": [{"$eq": ["$was_correct", False]}, 1, 0]}},
                         "avg_confidence": {"$avg": "$confidence"}
                     }
                 }
             ]
             result = list(self.prediction_history.aggregate(pipeline))
-            return result[0] if result else {"total": 0, "correct": 0, "avg_confidence": 0}
+            if result:
+                metrics = result[0]
+                metrics["accuracy"] = metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0
+                return metrics
+            return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
         except Exception as e:
             logging.error(f"Error getting accuracy metrics: {str(e)}")
-            return {"total": 0, "correct": 0, "avg_confidence": 0}
+            return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
 
     def get_consecutive_incorrect_predictions(self, endpoint_type: str) -> int:
         """Get the number of consecutive incorrect predictions."""
