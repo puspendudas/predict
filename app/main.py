@@ -33,37 +33,38 @@ class GameType(str, Enum):
 
 @app.on_event("startup")
 async def startup_event():
-    """Start the prediction service on application startup."""
-    asyncio.create_task(prediction_service.start_all_loops())
+    """Initialize the prediction service on startup."""
+    try:
+        # Start all prediction and verification loops
+        prediction_service.start_all_loops()
+        logger.info("Prediction service started successfully")
+    except Exception as e:
+        logger.error(f"Error starting prediction service: {str(e)}")
+        raise
 
 @app.get("/predict/{endpoint_type}")
 async def get_predictions(endpoint_type: str):
     """Get predictions for the specified endpoint type."""
     try:
-        results, current_mid, game_info = await prediction_service.fetch_latest_data(endpoint_type)
-        if not current_mid:
-            raise HTTPException(status_code=404, detail="No current game found")
-        
-        # Get cached prediction if available
-        cached_prediction = prediction_service.get_cached_predictions(current_mid, endpoint_type)
-        if cached_prediction:
-            return {
-                "mid": current_mid,
-                "predictions": cached_prediction,
-                "game_info": game_info
-            }
-        
-        # Generate new prediction if not cached
-        await prediction_service.generate_prediction_for_mid(current_mid, endpoint_type)
-        new_prediction = prediction_service.get_cached_predictions(current_mid, endpoint_type)
-        
-        if not new_prediction:
-            raise HTTPException(status_code=404, detail="No prediction available")
+        if endpoint_type not in prediction_service.endpoints:
+            raise HTTPException(status_code=400, detail="Invalid endpoint type")
+            
+        # Get current game state
+        game_state = prediction_service.get_current_game_state(endpoint_type)
+        if game_state["status"] == "error":
+            raise HTTPException(status_code=500, detail=game_state["message"])
+            
+        # Get predictions
+        predictions = prediction_service.predict_next_rounds(endpoint_type)
+        if not predictions:
+            raise HTTPException(status_code=500, detail="Failed to generate predictions")
             
         return {
-            "mid": current_mid,
-            "predictions": new_prediction,
-            "game_info": game_info
+            "status": "success",
+            "game_type": endpoint_type,
+            "current_mid": game_state["current_mid"],
+            "predictions": predictions,
+            "game_info": game_state
         }
     except Exception as e:
         logger.error(f"Error getting predictions: {str(e)}")

@@ -71,6 +71,13 @@ class PredictionService:
                 'Referer': 'https://terminal.apiserver.digital/',
             }
             
+            # Create a new event loop for this thread if needed
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
             async with self.session.get(odds_url, headers=headers, ssl=False) as response:
                 odds_data = await response.json()
             
@@ -103,6 +110,19 @@ class PredictionService:
             logger.error(f"Error fetching data: {str(e)}")
             return [], None, None
 
+    def fetch_latest_data_sync(self, endpoint_type='teen20') -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
+        """Synchronous wrapper for fetch_latest_data to be used in threads."""
+        try:
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            return loop.run_until_complete(self.fetch_latest_data(endpoint_type))
+        except Exception as e:
+            logger.error(f"Error in fetch_latest_data_sync: {str(e)}")
+            return [], None, None
+        finally:
+            loop.close()
+
     def get_cached_predictions(self, mid: str, endpoint_type: str) -> Optional[List[str]]:
         """Get cached predictions if they exist and are not expired."""
         if mid in self.prediction_cache:
@@ -121,7 +141,7 @@ class PredictionService:
     def verify_predictions(self, endpoint_type: str) -> None:
         """Verify predictions."""
         try:
-            results, current_mid, _ = asyncio.run(self.fetch_latest_data(endpoint_type))
+            results, current_mid, _ = self.fetch_latest_data_sync(endpoint_type)
             if not results or not current_mid:
                 return
 
@@ -228,7 +248,7 @@ class PredictionService:
             if cached_prediction:
                 return
 
-            results, current_mid, game_info = asyncio.run(self.fetch_latest_data(endpoint_type))
+            results, current_mid, game_info = self.fetch_latest_data_sync(endpoint_type)
             if not results or not game_info:
                 return
 
@@ -270,7 +290,7 @@ class PredictionService:
         def prediction_worker():
             while True:
                 try:
-                    results, current_mid, _ = asyncio.run(self.fetch_latest_data(endpoint_type))
+                    results, current_mid, _ = self.fetch_latest_data_sync(endpoint_type)
                     if current_mid and current_mid != self.last_mids.get(endpoint_type):
                         self.generate_prediction_for_mid(current_mid, endpoint_type)
                         self.last_mids[endpoint_type] = current_mid
