@@ -48,6 +48,8 @@ class PredictionService:
         self.prediction_window = 2
         self.session = None
         self.lock = asyncio.Lock()
+        self.prediction_threads = {}  # Initialize prediction_threads
+        self.verification_threads = {}  # Initialize verification_threads
 
     async def init_session(self):
         if not self.session:
@@ -161,13 +163,62 @@ class PredictionService:
             sequence = data[i:i + sequence_length]
             target = data[i + sequence_length]
             
-            features = [float(item.get("result", 0)) for item in sequence]
+            # Convert to tuple for hashability
+            features = tuple(float(item.get("result", 0)) for item in sequence)
             target_value = float(target.get("result", 0))
             
             X.append(features)
             y.append(target_value)
             
         return np.array(X), np.array(y)
+
+    async def update_model(self, endpoint_type: str) -> None:
+        """Update the model with recent data."""
+        try:
+            # Get historical data for training
+            historical_data = self.db.get_last_n_results(
+                self.max_samples_for_training,
+                endpoint_type
+            )
+            
+            if len(historical_data) < self.min_samples_for_training:
+                logging.warning(f"Insufficient data for model update: {len(historical_data)} samples")
+                return
+            
+            # Prepare training data
+            X, y = self.prepare_data(historical_data, self.sequence_length)
+            if len(X) == 0:
+                return
+            
+            # Train new model with improved parameters
+            self.model = RandomForestClassifier(
+                n_estimators=300,
+                max_depth=10,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features='sqrt',
+                random_state=42
+            )
+            
+            # Train the model
+            self.model.fit(X, y)
+            
+            # Calculate and log the accuracy
+            accuracy = self.calculate_accuracy(X, y)
+            logging.info(
+                f"Model updated for {endpoint_type} with {len(X)} samples. "
+                f"Current accuracy: {accuracy:.2f}"
+            )
+            
+            # Save the accuracy metrics
+            self.db.save_accuracy_metrics(
+                accuracy=accuracy,
+                total_predictions=len(X),
+                endpoint_type=endpoint_type
+            )
+            
+        except Exception as e:
+            logging.error(f"Error updating model for {endpoint_type}: {str(e)}")
 
     async def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
         """Generate prediction for a specific MID asynchronously."""
@@ -188,11 +239,11 @@ class PredictionService:
 
             # Train model if needed
             if len(X) > self.min_samples_for_training:
-                self.model.fit(X, y)
+                await self.update_model(endpoint_type)
 
             # Generate prediction
             last_sequence = results[-self.sequence_length:]
-            features = [float(item.get("result", 0)) for item in last_sequence]
+            features = tuple(float(item.get("result", 0)) for item in last_sequence)
             prediction = self.model.predict([features])[0]
             
             # Cache the prediction
@@ -356,54 +407,6 @@ class PredictionService:
                 
         except Exception as e:
             logging.error(f"Error checking model for {endpoint_type}: {str(e)}")
-
-    def update_model(self, endpoint_type: str) -> None:
-        """Update the model with recent data."""
-        try:
-            # Get historical data for training
-            historical_data = self.db.get_last_n_results(
-                self.max_samples_for_training,
-                endpoint_type
-            )
-            
-            if len(historical_data) < self.min_samples_for_training:
-                logging.warning(f"Insufficient data for model update: {len(historical_data)} samples")
-                return
-            
-            # Prepare training data
-            X, y = self.prepare_data(historical_data, self.sequence_length)
-            if len(X) == 0:
-                return
-            
-            # Train new model with improved parameters
-            self.model = RandomForestClassifier(
-                n_estimators=300,
-                max_depth=10,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                max_features='sqrt',
-                random_state=42
-            )
-            
-            # Train the model
-            self.model.fit(X, y)
-            
-            # Calculate and log the accuracy
-            accuracy = self.calculate_accuracy(X, y)
-            logging.info(
-                f"Model updated for {endpoint_type} with {len(X)} samples. "
-                f"Current accuracy: {accuracy:.2f}"
-            )
-            
-            # Save the accuracy metrics
-            self.db.save_accuracy_metrics(
-                accuracy=accuracy,
-                total_predictions=len(X),
-                endpoint_type=endpoint_type
-            )
-            
-        except Exception as e:
-            logging.error(f"Error updating model for {endpoint_type}: {str(e)}")
 
     def calculate_accuracy(self, X: np.ndarray, y: np.ndarray) -> float:
         """Calculate model accuracy on training data."""
