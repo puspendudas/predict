@@ -33,47 +33,33 @@ class GameType(str, Enum):
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the prediction service on startup."""
-    try:
-        # Start all prediction and verification loops
-        prediction_service.start_all_loops()
-        logger.info("Prediction service started successfully")
-    except Exception as e:
-        logger.error(f"Error starting prediction service: {str(e)}")
-        raise
+    """Start verification loops for all game types on application startup."""
+    game_types = ["teen20", "lucky7eu", "dt20"]
+    for game_type in game_types:
+        try:
+            prediction_service.start_verification_loop(game_type)
+            logger.info(f"Started verification loop for {game_type}")
+        except Exception as e:
+            logger.error(f"Failed to start verification loop for {game_type}: {str(e)}")
 
-@app.get("/predict/{endpoint_type}")
-async def get_predictions(endpoint_type: str):
-    """Get predictions for the specified endpoint type."""
+@app.get("/predict/{game_type}", response_model=PredictionResponse)
+async def get_prediction(game_type: GameType):
+    """Get predictions for a specific game type."""
     try:
-        if endpoint_type not in prediction_service.endpoints:
-            raise HTTPException(status_code=400, detail="Invalid endpoint type")
-            
         # Get current game state
-        game_state = prediction_service.get_current_game_state(endpoint_type)
+        game_state = prediction_service.get_current_game_state(game_type)
+        
         if game_state["status"] == "error":
-            raise HTTPException(status_code=500, detail=game_state["message"])
-            
-        # Get predictions
-        predictions = prediction_service.predict_next_rounds(endpoint_type)
-        if not predictions:
-            raise HTTPException(status_code=500, detail="Failed to generate predictions")
-            
-        return {
-            "status": "success",
-            "game_type": endpoint_type,
-            "current_mid": game_state["current_mid"],
-            "predictions": predictions,
-            "game_info": game_state
-        }
+            raise HTTPException(status_code=404, detail=game_state["message"])
+        
+        return PredictionResponse(
+            current_results=game_state,
+            game_type=game_type,
+            timestamp=datetime.now().isoformat()
+        )
     except Exception as e:
-        logger.error(f"Error getting predictions: {str(e)}")
+        logger.error(f"Error getting prediction for {game_type}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy"}
 
 @app.get("/accuracy/{game_type}", response_model=ModelAccuracy)
 async def get_model_accuracy(game_type: GameType):
