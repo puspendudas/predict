@@ -116,12 +116,16 @@ class PredictionService:
             # Create a new event loop for this thread
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-            return loop.run_until_complete(self.fetch_latest_data(endpoint_type))
+            result = loop.run_until_complete(self.fetch_latest_data(endpoint_type))
+            return result
         except Exception as e:
             logger.error(f"Error in fetch_latest_data_sync: {str(e)}")
             return [], None, None
         finally:
-            loop.close()
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     def get_cached_predictions(self, mid: str, endpoint_type: str) -> Optional[List[str]]:
         """Get cached predictions if they exist and are not expired."""
@@ -452,7 +456,8 @@ class PredictionService:
     def get_current_game_state(self, endpoint_type: str) -> Dict:
         """Get current game state including MID and prediction info."""
         try:
-            _, current_mid, _ = self.fetch_latest_data(endpoint_type)
+            # Use the synchronous version of fetch_latest_data
+            _, current_mid, _ = self.fetch_latest_data_sync(endpoint_type)
             if not current_mid:
                 return {
                     "status": "error",
