@@ -1,6 +1,7 @@
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
-import requests
+import aiohttp
+import asyncio
 import json
 import os
 from .config.database import Database
@@ -10,8 +11,7 @@ from typing import Dict, List, Tuple, Optional
 import time
 import urllib3
 import certifi
-import asyncio
-import threading
+from functools import lru_cache
 from app.config.logging_config import setup_logging
 
 # Disable SSL warnings
@@ -25,7 +25,9 @@ class PredictionService:
         self.model = RandomForestClassifier(n_estimators=100)
         self.db = Database()
         self.last_predictions = {}
-        self.last_mids = {}  # Store last seen MID for each game type
+        self.last_mids = {}
+        self.prediction_cache = {}
+        self.cache_timeout = 30  # seconds
         self.endpoints = {
             'teen20': os.getenv('TEEN20_ODDS_API_URL'),
             'lucky7eu': os.getenv('LUCKY7EU_ODDS_API_URL'),
@@ -36,21 +38,25 @@ class PredictionService:
             'lucky7eu': os.getenv('LUCKY7EU_RESULTS_API_URL'),
             'dt20': os.getenv('DT20_RESULTS_API_URL')
         }
-        self.verification_interval = 5  # seconds
-        self.prediction_interval = 30  # seconds - generate predictions every 30 seconds
+        self.verification_interval = 5
+        self.prediction_interval = 30
         self.min_confidence_threshold = 0.4
         self.accuracy_threshold = 0.6
         self.min_samples_for_training = 20
         self.max_samples_for_training = 500
         self.sequence_length = 8
         self.prediction_window = 2
-        self.verification_threads = {}
-        self.prediction_threads = {}
+        self.session = None
+        self.lock = asyncio.Lock()
 
-    def fetch_latest_data(self, endpoint_type='teen20') -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
-        """Fetch latest data and return results, current MID, and game info."""
+    async def init_session(self):
+        if not self.session:
+            self.session = aiohttp.ClientSession()
+
+    async def fetch_latest_data(self, endpoint_type='teen20') -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
+        """Fetch latest data asynchronously and return results, current MID, and game info."""
         try:
-            # Get current MID and game info from odds API
+            await self.init_session()
             odds_url = self.endpoints.get(endpoint_type)
             if not odds_url:
                 raise ValueError(f"Invalid endpoint type: {endpoint_type}")
@@ -62,18 +68,9 @@ class PredictionService:
                 'Referer': 'https://terminal.apiserver.digital/',
             }
             
-            try:
-                response = requests.get(odds_url, headers=headers, verify=certifi.where())
-                response.raise_for_status()
-                odds_data = response.json()
-            except requests.exceptions.SSLError:
-                response = requests.get(odds_url, headers=headers, verify=False)
-                response.raise_for_status()
-                odds_data = response.json()
-            except requests.exceptions.RequestException as e:
-                return [], None, None
+            async with self.session.get(odds_url, headers=headers, ssl=False) as response:
+                odds_data = await response.json()
             
-            # Get current MID and game info from t1
             current_mid = None
             game_info = None
             t1_data = odds_data.get("data", {}).get("data", {}).get("data", {}).get("t1", [])
@@ -89,125 +86,160 @@ class PredictionService:
                     "min": t1_data.get("min")
                 }
             
-            # Get results from results API
             results_url = self.result_endpoints.get(endpoint_type)
             if not results_url:
                 raise ValueError(f"Invalid results endpoint type: {endpoint_type}")
             
-            try:
-                response = requests.get(results_url, headers=headers, verify=certifi.where())
-                response.raise_for_status()
-                results_data = response.json()
-            except requests.exceptions.SSLError:
-                response = requests.get(results_url, headers=headers, verify=False)
-                response.raise_for_status()
-                results_data = response.json()
-            except requests.exceptions.RequestException as e:
-                return [], current_mid, game_info
+            async with self.session.get(results_url, headers=headers, ssl=False) as response:
+                results_data = await response.json()
             
-            # Get results and log only the results section
-            results = results_data.get("data", {}).get("data", {}).get("data", {}).get("result", [])
-            if results:
-                logging.info(f"Results for {endpoint_type}:")
-                for result in results:
-                    logging.info(
-                        f"MID: {result.get('mid')}, "
-                        f"Value: {result.get('result')}, "
-                        f"Time: {result.get('time')}"
-                    )
-            
+            results = results_data.get("data", {}).get("data", {}).get("data", [])
             return results, current_mid, game_info
+            
         except Exception as e:
+            logger.error(f"Error fetching data: {str(e)}")
             return [], None, None
 
-    def verify_predictions(self, endpoint_type: str) -> None:
-        """Verify predictions against actual results every second."""
-        logging.info(f"Starting verification loop for {endpoint_type}")
+    @lru_cache(maxsize=100)
+    def get_cached_predictions(self, mid: str, endpoint_type: str) -> Optional[List[str]]:
+        """Get cached predictions if they exist and are not expired."""
+        if mid in self.prediction_cache:
+            cache_entry = self.prediction_cache[mid]
+            if time.time() - cache_entry['timestamp'] < self.cache_timeout:
+                return cache_entry['predictions']
+        return None
+
+    def cache_predictions(self, mid: str, predictions: List[str]):
+        """Cache predictions with timestamp."""
+        self.prediction_cache[mid] = {
+            'predictions': predictions,
+            'timestamp': time.time()
+        }
+
+    async def verify_predictions(self, endpoint_type: str) -> None:
+        """Asynchronously verify predictions."""
+        try:
+            results, current_mid, _ = await self.fetch_latest_data(endpoint_type)
+            if not results or not current_mid:
+                return
+
+            for result in results:
+                result_mid = result["mid"]
+                actual_value = result["result"]
+                
+                prediction = self.db.prediction_history.find_one({
+                    "mid": result_mid,
+                    "endpoint_type": endpoint_type,
+                    "verified": False
+                })
+                
+                if prediction:
+                    predicted_value = prediction["predicted_value"]
+                    was_correct = actual_value == predicted_value
+                    
+                    await self.db.update_prediction_result(
+                        result_mid,
+                        actual_value,
+                        endpoint_type,
+                        was_correct
+                    )
+                    
+                    self.db.insert_result(result, endpoint_type)
+        except Exception as e:
+            logger.error(f"Error in verification: {str(e)}")
+
+    @lru_cache(maxsize=1000)
+    def prepare_data(self, data: List[Dict], sequence_length: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Prepare data for training with caching."""
+        if not data:
+            return np.array([]), np.array([])
+            
+        X = []
+        y = []
+        
+        for i in range(len(data) - sequence_length):
+            sequence = data[i:i + sequence_length]
+            target = data[i + sequence_length]
+            
+            features = [float(item.get("result", 0)) for item in sequence]
+            target_value = float(target.get("result", 0))
+            
+            X.append(features)
+            y.append(target_value)
+            
+        return np.array(X), np.array(y)
+
+    async def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
+        """Generate prediction for a specific MID asynchronously."""
+        try:
+            # Check cache first
+            cached_prediction = self.get_cached_predictions(mid, endpoint_type)
+            if cached_prediction:
+                return
+
+            results, current_mid, game_info = await self.fetch_latest_data(endpoint_type)
+            if not results or not game_info:
+                return
+
+            # Prepare data for prediction
+            X, y = self.prepare_data(results, self.sequence_length)
+            if len(X) < self.min_samples_for_training:
+                return
+
+            # Train model if needed
+            if len(X) > self.min_samples_for_training:
+                self.model.fit(X, y)
+
+            # Generate prediction
+            last_sequence = results[-self.sequence_length:]
+            features = [float(item.get("result", 0)) for item in last_sequence]
+            prediction = self.model.predict([features])[0]
+            
+            # Cache the prediction
+            self.cache_predictions(mid, [str(prediction)])
+            
+            # Store prediction in database
+            self.db.insert_prediction({
+                "mid": mid,
+                "predicted_value": str(prediction),
+                "endpoint_type": endpoint_type,
+                "timestamp": datetime.now(),
+                "verified": False
+            })
+
+        except Exception as e:
+            logger.error(f"Error generating prediction: {str(e)}")
+
+    async def start_prediction_loop(self, endpoint_type: str):
+        """Start the prediction loop asynchronously."""
         while True:
             try:
-                # Get latest results from casino-last-10-results API
-                results, current_mid, _ = self.fetch_latest_data(endpoint_type)
-                if not results:
-                    logging.warning(f"No results found for {endpoint_type}")
-                    time.sleep(1)  # Check every second
-                    continue
-
-                # Log the results for debugging
-                logging.info(f"Received {len(results)} results for {endpoint_type}")
-                for result in results:
-                    logging.info(f"Result data: MID: {result.get('mid')}, Value: {result.get('result')}")
-
-                # Process each result
-                for result in results:
-                    result_mid = result["mid"]
-                    actual_value = result["result"]
-                    
-                    # Log the result we're processing
-                    logging.info(f"Processing result for {endpoint_type} - MID: {result_mid}, Value: {actual_value}")
-                    
-                    # Find unverified prediction for this MID
-                    prediction = self.db.prediction_history.find_one({
-                        "mid": result_mid,
-                        "endpoint_type": endpoint_type,
-                        "verified": False
-                    })
-                    
-                    if prediction:
-                        predicted_value = prediction["predicted_value"]
-                        was_correct = actual_value == predicted_value
-                        
-                        # Log the prediction we found
-                        logging.info(
-                            f"Found unverified prediction for {endpoint_type} - "
-                            f"MID: {result_mid}, "
-                            f"Predicted: {predicted_value}, "
-                            f"Actual: {actual_value}, "
-                            f"Correct: {was_correct}"
-                        )
-                        
-                        # Update prediction with actual result
-                        update_success = self.db.update_prediction_result(
-                            result_mid,
-                            actual_value,
-                            endpoint_type,
-                            was_correct
-                        )
-                        
-                        if update_success:
-                            # Save the actual result
-                            self.db.insert_result(result, endpoint_type)
-                            
-                            # Verify the update in prediction_history
-                            updated_prediction = self.db.prediction_history.find_one({
-                                "mid": result_mid,
-                                "endpoint_type": endpoint_type
-                            })
-                            
-                            if updated_prediction and updated_prediction.get("verified"):
-                                logging.info(
-                                        f"Successfully verified prediction for {endpoint_type} - "
-                                        f"MID: {result_mid}, "
-                                        f"Predicted: {predicted_value}, "
-                                        f"Actual: {actual_value}, "
-                                        f"Correct: {was_correct}, "
-                                        f"Verification Time: {updated_prediction.get('verification_timestamp')}"
-                                    )
-                            else:
-                                logging.error(
-                                    f"Prediction verification failed for {endpoint_type} - "
-                                    f"MID: {result_mid}"
-                            )
-                        else:
-                            logging.error(
-                                f"Failed to update prediction for {endpoint_type} - MID: {result_mid}"
-                            )
-                    else:
-                        logging.info(f"No unverified prediction found for {endpoint_type} - MID: {result_mid}")
-                
-                time.sleep(1)  # Check every second
+                results, current_mid, _ = await self.fetch_latest_data(endpoint_type)
+                if current_mid and current_mid != self.last_mids.get(endpoint_type):
+                    await self.generate_prediction_for_mid(current_mid, endpoint_type)
+                    self.last_mids[endpoint_type] = current_mid
+                await asyncio.sleep(self.prediction_interval)
             except Exception as e:
-                logging.error(f"Error in verification loop for {endpoint_type}: {str(e)}")
-                time.sleep(1)  # Check every second
+                logger.error(f"Error in prediction loop: {str(e)}")
+                await asyncio.sleep(self.prediction_interval)
+
+    async def start_verification_loop(self, endpoint_type: str):
+        """Start the verification loop asynchronously."""
+        while True:
+            try:
+                await self.verify_predictions(endpoint_type)
+                await asyncio.sleep(self.verification_interval)
+            except Exception as e:
+                logger.error(f"Error in verification loop: {str(e)}")
+                await asyncio.sleep(self.verification_interval)
+
+    async def start_all_loops(self):
+        """Start all prediction and verification loops."""
+        tasks = []
+        for endpoint_type in self.endpoints.keys():
+            tasks.append(self.start_prediction_loop(endpoint_type))
+            tasks.append(self.start_verification_loop(endpoint_type))
+        await asyncio.gather(*tasks)
 
     def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
         """Generate prediction for a specific MID."""
@@ -377,17 +409,6 @@ class PredictionService:
         """Calculate model accuracy on training data."""
         predictions = self.model.predict(X)
         return np.mean(predictions == y)
-
-    def prepare_data(self, data: List[Dict], sequence_length: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare training data from historical results."""
-        X, y = [], []
-        results = [int(d["result"]) for d in data]
-        
-        for i in range(len(results) - sequence_length):
-            X.append(results[i:i+sequence_length])
-            y.append(results[i+sequence_length])
-            
-        return np.array(X), np.array(y)
 
     def predict_next_rounds(self, endpoint_type='teen20', n_predictions=2) -> List[str]:
         """Generate predictions for the next rounds."""

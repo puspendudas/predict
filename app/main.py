@@ -33,33 +33,46 @@ class GameType(str, Enum):
 
 @app.on_event("startup")
 async def startup_event():
-    """Start verification loops for all game types on application startup."""
-    game_types = ["teen20", "lucky7eu", "dt20"]
-    for game_type in game_types:
-        try:
-            prediction_service.start_verification_loop(game_type)
-            logger.info(f"Started verification loop for {game_type}")
-        except Exception as e:
-            logger.error(f"Failed to start verification loop for {game_type}: {str(e)}")
+    """Start the prediction service on application startup."""
+    asyncio.create_task(prediction_service.start_all_loops())
 
-@app.get("/predict/{game_type}", response_model=PredictionResponse)
-async def get_prediction(game_type: GameType):
-    """Get predictions for a specific game type."""
+@app.get("/predict/{endpoint_type}")
+async def get_predictions(endpoint_type: str):
+    """Get predictions for the specified endpoint type."""
     try:
-        # Get current game state
-        game_state = prediction_service.get_current_game_state(game_type)
+        results, current_mid, game_info = await prediction_service.fetch_latest_data(endpoint_type)
+        if not current_mid:
+            raise HTTPException(status_code=404, detail="No current game found")
         
-        if game_state["status"] == "error":
-            raise HTTPException(status_code=404, detail=game_state["message"])
+        # Get cached prediction if available
+        cached_prediction = prediction_service.get_cached_predictions(current_mid, endpoint_type)
+        if cached_prediction:
+            return {
+                "mid": current_mid,
+                "predictions": cached_prediction,
+                "game_info": game_info
+            }
         
-        return PredictionResponse(
-            current_results=game_state,
-            game_type=game_type,
-            timestamp=datetime.now().isoformat()
-        )
+        # Generate new prediction if not cached
+        await prediction_service.generate_prediction_for_mid(current_mid, endpoint_type)
+        new_prediction = prediction_service.get_cached_predictions(current_mid, endpoint_type)
+        
+        if not new_prediction:
+            raise HTTPException(status_code=404, detail="No prediction available")
+            
+        return {
+            "mid": current_mid,
+            "predictions": new_prediction,
+            "game_info": game_info
+        }
     except Exception as e:
-        logger.error(f"Error getting prediction for {game_type}: {str(e)}")
+        logger.error(f"Error getting predictions: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint."""
+    return {"status": "healthy"}
 
 @app.get("/accuracy/{game_type}", response_model=ModelAccuracy)
 async def get_model_accuracy(game_type: GameType):
