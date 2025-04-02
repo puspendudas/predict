@@ -71,16 +71,44 @@ class PredictionService:
                 response.raise_for_status()
                 odds_data = response.json()
             except requests.exceptions.RequestException as e:
+                logging.error(f"Error fetching odds data for {endpoint_type}: {str(e)}")
                 return [], None, None
+            
+            # Log the full response for debugging
+            logging.info(f"Odds API response for {endpoint_type}: {json.dumps(odds_data, indent=2)}")
             
             # Get current MID and game info from t1
             current_mid = None
             game_info = None
-            t1_data = odds_data.get("data", {}).get("data", {}).get("data", {}).get("t1", [])
+            
+            # Try different possible paths to get t1 data
+            t1_data = None
+            if "data" in odds_data:
+                if isinstance(odds_data["data"], dict):
+                    if "data" in odds_data["data"]:
+                        if isinstance(odds_data["data"]["data"], dict):
+                            if "data" in odds_data["data"]["data"]:
+                                if isinstance(odds_data["data"]["data"]["data"], dict):
+                                    t1_data = odds_data["data"]["data"]["data"].get("t1", [])
+                                else:
+                                    t1_data = odds_data["data"]["data"].get("t1", [])
+                            else:
+                                t1_data = odds_data["data"]["data"].get("t1", [])
+                        else:
+                            t1_data = odds_data["data"].get("t1", [])
+                    else:
+                        t1_data = odds_data["data"].get("t1", [])
+                else:
+                    t1_data = odds_data.get("t1", [])
             
             if t1_data and len(t1_data) > 0:
                 t1_data = t1_data[0]
                 current_mid = t1_data.get("mid")
+                if current_mid:
+                    logging.info(f"Found current MID for {endpoint_type}: {current_mid}")
+                else:
+                    logging.warning(f"No MID found in t1 data for {endpoint_type}")
+                
                 game_info = {
                     "mid": current_mid,
                     "autotime": t1_data.get("autotime"),
@@ -88,6 +116,8 @@ class PredictionService:
                     "max": t1_data.get("max"),
                     "min": t1_data.get("min")
                 }
+            else:
+                logging.warning(f"No t1 data found in response for {endpoint_type}")
             
             # Get results from results API
             results_url = self.result_endpoints.get(endpoint_type)
@@ -103,10 +133,32 @@ class PredictionService:
                 response.raise_for_status()
                 results_data = response.json()
             except requests.exceptions.RequestException as e:
+                logging.error(f"Error fetching results data for {endpoint_type}: {str(e)}")
                 return [], current_mid, game_info
             
+            # Log the full response for debugging
+            logging.info(f"Results API response for {endpoint_type}: {json.dumps(results_data, indent=2)}")
+            
             # Get results and log only the results section
-            results = results_data.get("data", {}).get("data", {}).get("data", {}).get("result", [])
+            results = []
+            if "data" in results_data:
+                if isinstance(results_data["data"], dict):
+                    if "data" in results_data["data"]:
+                        if isinstance(results_data["data"]["data"], dict):
+                            if "data" in results_data["data"]["data"]:
+                                if isinstance(results_data["data"]["data"]["data"], dict):
+                                    results = results_data["data"]["data"]["data"].get("result", [])
+                                else:
+                                    results = results_data["data"]["data"].get("result", [])
+                            else:
+                                results = results_data["data"]["data"].get("result", [])
+                        else:
+                            results = results_data["data"].get("result", [])
+                    else:
+                        results = results_data["data"].get("result", [])
+                else:
+                    results = results_data.get("result", [])
+            
             if results:
                 logging.info(f"Results for {endpoint_type}:")
                 for result in results:
@@ -118,6 +170,7 @@ class PredictionService:
             
             return results, current_mid, game_info
         except Exception as e:
+            logging.error(f"Error in fetch_latest_data for {endpoint_type}: {str(e)}")
             return [], None, None
 
     def verify_predictions(self, endpoint_type: str) -> None:
