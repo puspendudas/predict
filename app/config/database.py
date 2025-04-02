@@ -6,8 +6,12 @@ import logging
 from typing import Dict, List, Optional
 import certifi
 import ssl
+from app.config.logging_config import setup_logging
 
 load_dotenv()
+
+# Initialize logging
+logger = setup_logging()
 
 class Database:
     def __init__(self):
@@ -33,9 +37,9 @@ class Database:
             self.prediction_history.create_index("timestamp")
             self.model_accuracy.create_index([("endpoint_type", 1), ("timestamp", -1)])
             
-            logging.info("Successfully connected to MongoDB")
+            logger.info("Successfully connected to MongoDB")
         except Exception as e:
-            logging.error(f"Failed to connect to MongoDB: {str(e)}")
+            logger.error(f"Failed to connect to MongoDB: {str(e)}")
             raise
 
     def insert_result(self, data: Dict, endpoint_type: str) -> Optional[Dict]:
@@ -49,7 +53,7 @@ class Database:
                 upsert=True
             )
         except Exception as e:
-            logging.error(f"Error inserting result: {str(e)}")
+            logger.error(f"Error inserting result: {str(e)}")
             return None
 
     def get_last_n_results(self, n: int, endpoint_type: str) -> List[Dict]:
@@ -62,79 +66,138 @@ class Database:
     def save_prediction(self, mid: str, predicted_value: str, timestamp: str, endpoint_type: str, confidence: float = 0.0) -> Optional[Dict]:
         """Save a new prediction with confidence score."""
         try:
-            logging.info(f"Saving prediction for {endpoint_type} - MID: {mid}, Value: {predicted_value}, Confidence: {confidence}")
-            result = self.prediction_history.insert_one({
+            # Check if prediction already exists
+            existing_prediction = self.prediction_history.find_one({
+                "mid": mid,
+                "endpoint_type": endpoint_type,
+                "verified": False
+            })
+            
+            if existing_prediction:
+                logger.info(f"Prediction already exists for {endpoint_type} - MID: {mid}")
+                return existing_prediction
+            
+            # Create prediction document with all required fields
+            prediction_doc = {
                 "mid": mid,
                 "predicted_value": predicted_value,
                 "timestamp": timestamp,
                 "endpoint_type": endpoint_type,
                 "verified": False,
                 "confidence": confidence,
-                "verification_timestamp": None,
-                "was_correct": None
-            })
+                "actual_value": None,
+                "was_correct": None,
+                "verification_timestamp": None
+            }
+            
+            logger.info(f"Saving prediction for {endpoint_type} - MID: {mid}, Value: {predicted_value}, Confidence: {confidence}")
+            result = self.prediction_history.insert_one(prediction_doc)
+            
             if result.inserted_id:
-                logging.info(f"Successfully saved prediction for {endpoint_type} - MID: {mid}")
-                return result
+                # Verify the saved document
+                saved_prediction = self.prediction_history.find_one({"_id": result.inserted_id})
+                if saved_prediction:
+                    logger.info(f"Successfully saved prediction for {endpoint_type} - MID: {mid}")
+                    return saved_prediction
+                else:
+                    logger.error(f"Failed to verify saved prediction for {endpoint_type} - MID: {mid}")
+                    return None
             else:
-                logging.error(f"Failed to save prediction for {endpoint_type} - MID: {mid}")
+                logger.error(f"Failed to save prediction for {endpoint_type} - MID: {mid}")
                 return None
+                
         except Exception as e:
-            logging.error(f"Error saving prediction: {str(e)}")
+            logger.error(f"Error saving prediction: {str(e)}")
             return None
 
     def get_prediction(self, mid: str, endpoint_type: str) -> Optional[Dict]:
         """Get a prediction by MID and endpoint type."""
         try:
+            # First try to get unverified prediction
             prediction = self.prediction_history.find_one({
                 "mid": mid,
                 "endpoint_type": endpoint_type,
                 "verified": False
             })
+            
+            if not prediction:
+                # If no unverified prediction, try to get the most recent verified prediction
+                prediction = self.prediction_history.find_one({
+                    "mid": mid,
+                    "endpoint_type": endpoint_type,
+                    "verified": True
+                }, sort=[("timestamp", -1)])
+            
             if prediction:
-                logging.info(f"Found unverified prediction for {endpoint_type} - MID: {mid}")
+                logger.info(f"Found prediction for {endpoint_type} - MID: {mid}")
             else:
-                logging.info(f"No unverified prediction found for {endpoint_type} - MID: {mid}")
+                logger.info(f"No prediction found for {endpoint_type} - MID: {mid}")
             return prediction
         except Exception as e:
-            logging.error(f"Error getting prediction: {str(e)}")
+            logger.error(f"Error getting prediction: {str(e)}")
             return None
 
     def update_prediction_result(self, mid: str, actual_value: str, endpoint_type: str, was_correct: bool) -> bool:
-        """Update a prediction with its actual result."""
+        """Update prediction with actual result and mark as verified."""
         try:
-            prediction = self.get_prediction(mid, endpoint_type)
+            # Find the prediction
+            prediction = self.prediction_history.find_one({
+                "mid": mid,
+                "endpoint_type": endpoint_type,
+                "verified": False
+            })
+            
             if prediction:
-                logging.info(
-                    f"Updating prediction in database - MID: {mid}, "
-                    f"Endpoint: {endpoint_type}, "
+                # Log the prediction we found
+                logger.info(
+                    f"Found prediction to update for {endpoint_type} - "
+                    f"MID: {mid}, "
+                    f"Current Value: {prediction.get('predicted_value')}, "
+                    f"Actual Value: {actual_value}, "
                     f"Was Correct: {was_correct}"
                 )
                 
+                # Update the prediction document with all verification fields
+                current_time = datetime.now().isoformat()
+                update_fields = {
+                    "actual_value": actual_value,
+                    "verified": True,
+                    "was_correct": was_correct,
+                    "verification_timestamp": current_time
+                }
+                
+                # Log the update fields for debugging
+                logger.info(f"Updating prediction fields for {endpoint_type} - MID: {mid}: {update_fields}")
+                
+                # Update the prediction document
                 update_result = self.prediction_history.update_one(
                     {"_id": prediction["_id"]},
-                    {
-                        "$set": {
-                            "actual_value": actual_value,
-                            "verified": True,
-                            "was_correct": was_correct,
-                            "verification_timestamp": datetime.now().isoformat()
-                        }
-                    }
+                    {"$set": update_fields}
                 )
                 
                 if update_result.modified_count == 0:
-                    logging.error(
+                    logger.error(
                         f"Failed to update prediction in database - MID: {mid}, "
                         f"Endpoint: {endpoint_type}"
                     )
                     return False
                 
-                logging.info(
-                    f"Successfully updated prediction in database - MID: {mid}, "
-                    f"Endpoint: {endpoint_type}, "
-                    f"Modified count: {update_result.modified_count}"
-                )
+                # Verify the update
+                updated_prediction = self.prediction_history.find_one({"_id": prediction["_id"]})
+                if updated_prediction and updated_prediction.get("verified"):
+                    logger.info(
+                        f"Successfully updated prediction in database - MID: {mid}, "
+                        f"Endpoint: {endpoint_type}, "
+                        f"Actual Value: {actual_value}, "
+                        f"Was Correct: {was_correct}, "
+                        f"Verification Time: {current_time}"
+                    )
+                else:
+                    logger.error(
+                        f"Prediction update verification failed - MID: {mid}, "
+                        f"Endpoint: {endpoint_type}"
+                    )
+                    return False
                 
                 # Update accuracy metrics immediately
                 metrics = self.get_accuracy_metrics(endpoint_type, last_n_days=1)
@@ -145,17 +208,17 @@ class Database:
                         total_predictions=metrics["total"],
                         endpoint_type=endpoint_type
                     )
-                    logging.info(f"Updated accuracy metrics for {endpoint_type}: {accuracy:.2f}")
+                    logger.info(f"Updated accuracy metrics for {endpoint_type}: {accuracy:.2f}")
                 
                 return True
                 
-            logging.warning(
+            logger.warning(
                 f"No unverified prediction found to update - MID: {mid}, "
                 f"Endpoint: {endpoint_type}"
             )
             return False
         except Exception as e:
-            logging.error(f"Error updating prediction result: {str(e)}")
+            logger.error(f"Error updating prediction result: {str(e)}")
             return False
 
     def get_accuracy_metrics(self, endpoint_type: str, last_n_days: Optional[int] = 7) -> Dict:
@@ -183,14 +246,23 @@ class Database:
                     }
                 }
             ]
+            
             result = list(self.prediction_history.aggregate(pipeline))
             if result:
                 metrics = result[0]
                 metrics["accuracy"] = metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0
+                logger.info(
+                    f"Accuracy metrics for {endpoint_type}: "
+                    f"Total: {metrics['total']}, "
+                    f"Correct: {metrics['correct']}, "
+                    f"Accuracy: {metrics['accuracy']:.2f}"
+                )
                 return metrics
+                
+            logger.warning(f"No accuracy metrics found for {endpoint_type}")
             return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
         except Exception as e:
-            logging.error(f"Error getting accuracy metrics: {str(e)}")
+            logger.error(f"Error getting accuracy metrics: {str(e)}")
             return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
 
     def get_consecutive_incorrect_predictions(self, endpoint_type: str) -> int:
@@ -222,7 +294,7 @@ class Database:
             result = list(self.prediction_history.aggregate(pipeline))
             return max(0, result[0]["consecutive_incorrect"]) if result else 0
         except Exception as e:
-            logging.error(f"Error getting consecutive incorrect predictions: {str(e)}")
+            logger.error(f"Error getting consecutive incorrect predictions: {str(e)}")
             return 0
 
     def save_accuracy_metrics(self, accuracy: float, total_predictions: int, endpoint_type: str) -> Optional[Dict]:
@@ -235,10 +307,10 @@ class Database:
                 "endpoint_type": endpoint_type,
                 "model_version": "1.0",  # Track model versions
                 "training_samples": total_predictions,
-                "last_update": datetime.now().isoformat()
+                "last_updated": datetime.now().isoformat()
             })
         except Exception as e:
-            logging.error(f"Error saving accuracy metrics: {str(e)}")
+            logger.error(f"Error saving accuracy metrics: {str(e)}")
             return None
 
     def get_model_performance_history(self, endpoint_type: str, limit: int = 100) -> List[Dict]:
@@ -249,7 +321,7 @@ class Database:
                 {"_id": 0}
             ).sort("timestamp", -1).limit(limit))
         except Exception as e:
-            logging.error(f"Error getting model performance history: {str(e)}")
+            logger.error(f"Error getting model performance history: {str(e)}")
             return []
 
     def get_recent_accuracy_trend(self, endpoint_type: str, days: int = 7) -> Dict:
@@ -283,7 +355,7 @@ class Database:
                 "samples": 0
             }
         except Exception as e:
-            logging.error(f"Error getting recent accuracy trend: {str(e)}")
+            logger.error(f"Error getting recent accuracy trend: {str(e)}")
             return {
                 "avg_accuracy": 0,
                 "min_accuracy": 0,
@@ -303,7 +375,7 @@ class Database:
                 {"_id": 0}
             ).sort("timestamp", -1).limit(limit))
         except Exception as e:
-            logging.error(f"Error getting prediction history: {str(e)}")
+            logger.error(f"Error getting prediction history: {str(e)}")
             return []
 
     def get_results_by_date_range(self, endpoint_type: str, start_date: str, end_date: str) -> List[Dict]:
@@ -320,5 +392,38 @@ class Database:
                 {"_id": 0}
             ).sort("timestamp", 1))
         except Exception as e:
-            logging.error(f"Error getting results by date range: {str(e)}")
+            logger.error(f"Error getting results by date range: {str(e)}")
+            return []
+
+    def get_latest_result(self, endpoint_type: str) -> Optional[Dict]:
+        """Get the most recent result for a specific endpoint type."""
+        try:
+            result = self.collection.find_one(
+                {"endpoint_type": endpoint_type},
+                sort=[("timestamp", -1)]
+            )
+            if result:
+                logger.info(f"Found latest result for {endpoint_type} - MID: {result.get('mid')}")
+            else:
+                logger.info(f"No results found for {endpoint_type}")
+            return result
+        except Exception as e:
+            logger.error(f"Error getting latest result: {str(e)}")
+            return None
+
+    def get_predictions_by_mids(self, mids: List[str], endpoint_type: str) -> List[Dict]:
+        """Get predictions for specific MIDs and endpoint type."""
+        try:
+            predictions = list(self.prediction_history.find({
+                "mid": {"$in": mids},
+                "endpoint_type": endpoint_type,
+                "verified": False
+            }))
+            if predictions:
+                logger.info(f"Found {len(predictions)} predictions for {endpoint_type} MIDs: {mids}")
+            else:
+                logger.info(f"No predictions found for {endpoint_type} MIDs: {mids}")
+            return predictions
+        except Exception as e:
+            logger.error(f"Error getting predictions by MIDs: {str(e)}")
             return []

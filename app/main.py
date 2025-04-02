@@ -8,6 +8,7 @@ from datetime import datetime
 from enum import Enum
 import httpx
 import certifi
+from app.config.logging_config import setup_logging
 
 app = FastAPI()
 
@@ -20,11 +21,10 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-prediction_service = PredictionService()
+# Initialize logging
+logger = setup_logging()
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+prediction_service = PredictionService()
 
 class GameType(str, Enum):
     TEEN20 = "teen20"
@@ -33,21 +33,29 @@ class GameType(str, Enum):
 
 @app.on_event("startup")
 async def startup_event():
-    """Start verification loops for both games on application startup."""
-    for game_type in GameType:
-        prediction_service.start_verification_loop(game_type)
-        logger.info(f"Started verification loop for {game_type}")
+    """Start verification loops for all game types on application startup."""
+    game_types = ["teen20", "lucky7eu", "dt20"]
+    for game_type in game_types:
+        try:
+            prediction_service.start_verification_loop(game_type)
+            logger.info(f"Started verification loop for {game_type}")
+        except Exception as e:
+            logger.error(f"Failed to start verification loop for {game_type}: {str(e)}")
 
 @app.get("/predict/{game_type}", response_model=PredictionResponse)
 async def get_prediction(game_type: GameType):
     """Get predictions for a specific game type."""
     try:
-        current_results = prediction_service.fetch_latest_data(game_type)
-        predictions = prediction_service.predict_next_rounds(game_type)
+        # Get current game state
+        game_state = prediction_service.get_current_game_state(game_type)
+        
+        if game_state["status"] == "error":
+            raise HTTPException(status_code=404, detail=game_state["message"])
+        
         return PredictionResponse(
-            current_results=current_results,
-            predictions=predictions,
-            game_type=game_type
+            current_results=game_state,
+            game_type=game_type,
+            timestamp=datetime.now().isoformat()
         )
     except Exception as e:
         logger.error(f"Error getting prediction for {game_type}: {str(e)}")
@@ -61,6 +69,7 @@ async def get_model_accuracy(game_type: GameType):
         return ModelAccuracy(
             timestamp=datetime.now().isoformat(),
             accuracy=metrics["correct"] / metrics["total"] if metrics["total"] > 0 else 0,
+            correct_predictions=metrics["correct"],
             total_predictions=metrics["total"],
             game_type=game_type
         )
