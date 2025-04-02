@@ -13,6 +13,7 @@ import urllib3
 import certifi
 from functools import lru_cache
 from app.config.logging_config import setup_logging
+import threading
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -47,18 +48,18 @@ class PredictionService:
         self.sequence_length = 8
         self.prediction_window = 2
         self.session = None
-        self.lock = asyncio.Lock()
-        self.prediction_threads = {}  # Initialize prediction_threads
-        self.verification_threads = {}  # Initialize verification_threads
+        self.lock = threading.Lock()
+        self.prediction_threads = {}
+        self.verification_threads = {}
 
-    async def init_session(self):
+    def init_session(self):
         if not self.session:
             self.session = aiohttp.ClientSession()
 
     async def fetch_latest_data(self, endpoint_type='teen20') -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
         """Fetch latest data asynchronously and return results, current MID, and game info."""
         try:
-            await self.init_session()
+            self.init_session()
             odds_url = self.endpoints.get(endpoint_type)
             if not odds_url:
                 raise ValueError(f"Invalid endpoint type: {endpoint_type}")
@@ -102,7 +103,6 @@ class PredictionService:
             logger.error(f"Error fetching data: {str(e)}")
             return [], None, None
 
-    @lru_cache(maxsize=100)
     def get_cached_predictions(self, mid: str, endpoint_type: str) -> Optional[List[str]]:
         """Get cached predictions if they exist and are not expired."""
         if mid in self.prediction_cache:
@@ -118,10 +118,10 @@ class PredictionService:
             'timestamp': time.time()
         }
 
-    async def verify_predictions(self, endpoint_type: str) -> None:
-        """Asynchronously verify predictions."""
+    def verify_predictions(self, endpoint_type: str) -> None:
+        """Verify predictions."""
         try:
-            results, current_mid, _ = await self.fetch_latest_data(endpoint_type)
+            results, current_mid, _ = asyncio.run(self.fetch_latest_data(endpoint_type))
             if not results or not current_mid:
                 return
 
@@ -139,7 +139,7 @@ class PredictionService:
                     predicted_value = prediction["predicted_value"]
                     was_correct = actual_value == predicted_value
                     
-                    await self.db.update_prediction_result(
+                    self.db.update_prediction_result(
                         result_mid,
                         actual_value,
                         endpoint_type,
@@ -172,7 +172,7 @@ class PredictionService:
             
         return np.array(X), np.array(y)
 
-    async def update_model(self, endpoint_type: str) -> None:
+    def update_model(self, endpoint_type: str) -> None:
         """Update the model with recent data."""
         try:
             # Get historical data for training
@@ -220,15 +220,15 @@ class PredictionService:
         except Exception as e:
             logging.error(f"Error updating model for {endpoint_type}: {str(e)}")
 
-    async def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
-        """Generate prediction for a specific MID asynchronously."""
+    def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
+        """Generate prediction for a specific MID."""
         try:
             # Check cache first
             cached_prediction = self.get_cached_predictions(mid, endpoint_type)
             if cached_prediction:
                 return
 
-            results, current_mid, game_info = await self.fetch_latest_data(endpoint_type)
+            results, current_mid, game_info = asyncio.run(self.fetch_latest_data(endpoint_type))
             if not results or not game_info:
                 return
 
@@ -239,7 +239,7 @@ class PredictionService:
 
             # Train model if needed
             if len(X) > self.min_samples_for_training:
-                await self.update_model(endpoint_type)
+                self.update_model(endpoint_type)
 
             # Generate prediction
             last_sequence = results[-self.sequence_length:]
@@ -261,152 +261,54 @@ class PredictionService:
         except Exception as e:
             logger.error(f"Error generating prediction: {str(e)}")
 
-    async def start_prediction_loop(self, endpoint_type: str):
-        """Start the prediction loop asynchronously."""
-        while True:
-            try:
-                results, current_mid, _ = await self.fetch_latest_data(endpoint_type)
-                if current_mid and current_mid != self.last_mids.get(endpoint_type):
-                    await self.generate_prediction_for_mid(current_mid, endpoint_type)
-                    self.last_mids[endpoint_type] = current_mid
-                await asyncio.sleep(self.prediction_interval)
-            except Exception as e:
-                logger.error(f"Error in prediction loop: {str(e)}")
-                await asyncio.sleep(self.prediction_interval)
+    def start_prediction_loop(self, endpoint_type: str):
+        """Start a prediction generation loop in a separate thread."""
+        if endpoint_type in self.prediction_threads and self.prediction_threads[endpoint_type].is_alive():
+            logging.info(f"Prediction loop already running for {endpoint_type}")
+            return
 
-    async def start_verification_loop(self, endpoint_type: str):
-        """Start the verification loop asynchronously."""
-        while True:
-            try:
-                await self.verify_predictions(endpoint_type)
-                await asyncio.sleep(self.verification_interval)
-            except Exception as e:
-                logger.error(f"Error in verification loop: {str(e)}")
-                await asyncio.sleep(self.verification_interval)
+        def prediction_worker():
+            while True:
+                try:
+                    results, current_mid, _ = asyncio.run(self.fetch_latest_data(endpoint_type))
+                    if current_mid and current_mid != self.last_mids.get(endpoint_type):
+                        self.generate_prediction_for_mid(current_mid, endpoint_type)
+                        self.last_mids[endpoint_type] = current_mid
+                    time.sleep(self.prediction_interval)
+                except Exception as e:
+                    logger.error(f"Error in prediction loop: {str(e)}")
+                    time.sleep(self.prediction_interval)
 
-    async def start_all_loops(self):
+        thread = threading.Thread(target=prediction_worker, daemon=True)
+        thread.start()
+        self.prediction_threads[endpoint_type] = thread
+        logging.info(f"Started prediction loop for {endpoint_type}")
+
+    def start_verification_loop(self, endpoint_type: str):
+        """Start verification loop in a separate thread."""
+        if endpoint_type in self.verification_threads and self.verification_threads[endpoint_type].is_alive():
+            logging.info(f"Verification loop already running for {endpoint_type}")
+            return
+
+        def verification_worker():
+            while True:
+                try:
+                    self.verify_predictions(endpoint_type)
+                    time.sleep(self.verification_interval)
+                except Exception as e:
+                    logger.error(f"Error in verification loop: {str(e)}")
+                    time.sleep(self.verification_interval)
+
+        thread = threading.Thread(target=verification_worker, daemon=True)
+        thread.start()
+        self.verification_threads[endpoint_type] = thread
+        logging.info(f"Started verification loop for {endpoint_type}")
+
+    def start_all_loops(self):
         """Start all prediction and verification loops."""
-        tasks = []
         for endpoint_type in self.endpoints.keys():
-            tasks.append(self.start_prediction_loop(endpoint_type))
-            tasks.append(self.start_verification_loop(endpoint_type))
-        await asyncio.gather(*tasks)
-
-    def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
-        """Generate prediction for a specific MID."""
-        try:
-            # Get historical data for prediction
-            historical_data = self.db.get_last_n_results(10000, endpoint_type)
-            if len(historical_data) < self.min_samples_for_training:
-                logging.warning(f"Insufficient historical data for {endpoint_type}: {len(historical_data)} samples")
-                return
-            
-            # Ensure model is fitted
-            if not hasattr(self.model, "fitted_") or not self.model.fitted_:
-                logging.info(f"Training model for {endpoint_type} with {len(historical_data)} samples")
-                self.update_model(endpoint_type)
-            
-            # Prepare data and generate prediction
-            X, y = self.prepare_data(historical_data, self.sequence_length)
-            if len(X) == 0:
-                logging.warning(f"No valid sequences found for {endpoint_type}")
-                return
-            
-            last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
-            pred_proba = self.model.predict_proba([last_sequence])[0]
-            
-            # Handle predictions based on game type
-            if endpoint_type in ['teen20', 'dt20']:
-                # For teen20 and dt20, only predict 1 or 2
-                prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                
-                # Choose between 1 and 2 based on higher probability
-                if prob_1 >= prob_2:
-                    pred = "1"
-                    confidence = float(prob_1)
-                else:
-                    pred = "2"
-                    confidence = float(prob_2)
-            else:  # lucky7eu
-                # For lucky7eu, predict 0, 1, or 2
-                prob_0 = pred_proba[0] if len(pred_proba) > 0 else 0
-                prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                
-                # Choose between 0, 1, and 2 based on highest probability
-                max_prob = max(prob_0, prob_1, prob_2)
-                if max_prob == prob_0:
-                    pred = "0"
-                    confidence = float(prob_0)
-                elif max_prob == prob_1:
-                    pred = "1"
-                    confidence = float(prob_1)
-                else:
-                    pred = "2"
-                    confidence = float(prob_2)
-            
-            if confidence < self.min_confidence_threshold:
-                logging.warning(
-                    f"Low confidence prediction for {endpoint_type}: {confidence:.2f}. "
-                    f"Consider retraining model."
-                )
-            
-            # Save prediction
-            current_time = datetime.now().isoformat()
-            save_result = self.db.save_prediction(mid, pred, current_time, endpoint_type, confidence)
-            
-            if save_result:
-                self.last_predictions[mid] = pred
-                logging.info(
-                    f"Successfully saved prediction for {endpoint_type} - "
-                    f"MID: {mid}, Value: {pred}, Confidence: {confidence}"
-                )
-            else:
-                logging.error(f"Failed to save prediction for {endpoint_type} - MID: {mid}")
-            
-        except Exception as e:
-            logging.error(f"Error generating prediction for {endpoint_type} - MID: {mid}: {str(e)}")
-
-    def check_and_update_model(self, endpoint_type: str) -> None:
-        """Check model performance and update if necessary."""
-        try:
-            # Get recent accuracy metrics
-            metrics = self.db.get_accuracy_metrics(endpoint_type, last_n_days=1)
-            if metrics["total"] < 10:
-                return
-
-            accuracy = metrics["correct"] / metrics["total"]
-            
-            # Get recent accuracy trend
-            trend = self.db.get_recent_accuracy_trend(endpoint_type, days=7)
-            
-            # Check if model needs updating based on multiple factors
-            should_update = (
-                accuracy < self.accuracy_threshold or
-                self.db.get_consecutive_incorrect_predictions(endpoint_type) >= 5 or
-                (trend["avg_accuracy"] < self.accuracy_threshold and trend["samples"] >= 5) or
-                (trend["min_accuracy"] < 0.3 and trend["samples"] >= 10)
-            )
-            
-            if should_update:
-                logging.info(
-                    f"Model update triggered for {endpoint_type}. "
-                    f"Current accuracy: {accuracy:.2f}, "
-                    f"Average accuracy: {trend['avg_accuracy']:.2f}, "
-                    f"Min accuracy: {trend['min_accuracy']:.2f}"
-                )
-                self.update_model(endpoint_type)
-                
-                # Save the new accuracy metrics
-                self.db.save_accuracy_metrics(
-                    accuracy=accuracy,
-                    total_predictions=metrics["total"],
-                    endpoint_type=endpoint_type
-                )
-                
-        except Exception as e:
-            logging.error(f"Error checking model for {endpoint_type}: {str(e)}")
+            self.start_prediction_loop(endpoint_type)
+            self.start_verification_loop(endpoint_type)
 
     def calculate_accuracy(self, X: np.ndarray, y: np.ndarray) -> float:
         """Calculate model accuracy on training data."""
@@ -432,7 +334,7 @@ class PredictionService:
                 return ["0"] * n_predictions
             
             current_time = datetime.now().isoformat()
-            last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
+            last_sequence = tuple(float(d.get("result", 0)) for d in historical_data[-self.sequence_length:])
             
             predictions = []
             for _ in range(n_predictions):
@@ -474,7 +376,7 @@ class PredictionService:
                     )
                 
                 predictions.append(pred)
-                last_sequence = np.append(last_sequence[1:], int(pred))
+                last_sequence = tuple(list(last_sequence[1:]) + [float(pred)])
             
             # Save predictions with confidence scores
             next_mid = str(int(historical_data[0]["mid"]) + 1)
@@ -526,48 +428,6 @@ class PredictionService:
             except Exception as e:
                 logging.error(f"Error in prediction generation loop for {endpoint_type}: {str(e)}")
                 time.sleep(1)  # Check every second
-
-    def start_prediction_loop(self, endpoint_type: str):
-        """Start a prediction generation loop in a separate thread."""
-        if endpoint_type in self.prediction_threads and self.prediction_threads[endpoint_type].is_alive():
-            logging.info(f"Prediction loop already running for {endpoint_type}")
-            return
-
-        def prediction_worker():
-            while True:
-                try:
-                    self.generate_predictions(endpoint_type)
-                except Exception as e:
-                    logging.error(f"Error in prediction loop for {endpoint_type}: {str(e)}")
-                    time.sleep(self.prediction_interval)
-
-        thread = threading.Thread(target=prediction_worker, daemon=True)
-        thread.start()
-        self.prediction_threads[endpoint_type] = thread
-        logging.info(f"Started prediction loop for {endpoint_type}")
-
-    def start_verification_loop(self, endpoint_type: str):
-        """Start verification loop in a separate thread."""
-        if endpoint_type in self.verification_threads and self.verification_threads[endpoint_type].is_alive():
-            logging.info(f"Verification loop already running for {endpoint_type}")
-            return
-
-        def verification_worker():
-            while True:
-                try:
-                    self.verify_predictions(endpoint_type)
-                except Exception as e:
-                    logging.error(f"Error in verification loop for {endpoint_type}: {str(e)}")
-                    time.sleep(self.verification_interval)
-
-        # Start prediction loop
-        self.start_prediction_loop(endpoint_type)
-
-        # Start verification loop
-        thread = threading.Thread(target=verification_worker, daemon=True)
-        thread.start()
-        self.verification_threads[endpoint_type] = thread
-        logging.info(f"Started verification loop for {endpoint_type}")
 
     def get_current_game_state(self, endpoint_type: str) -> Dict:
         """Get current game state including MID and prediction info."""
