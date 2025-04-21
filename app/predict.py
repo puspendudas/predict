@@ -22,7 +22,15 @@ logger = setup_logging()
 
 class PredictionService:
     def __init__(self):
-        self.model = RandomForestClassifier(n_estimators=100)
+        self.model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=10,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            max_features='sqrt',
+            random_state=42,
+            class_weight='balanced'  # Add class weight balancing
+        )
         self.db = Database()
         self.last_predictions = {}
         self.last_mids = {}  # Store last seen MID for each game type
@@ -285,20 +293,23 @@ class PredictionService:
             last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
             pred_proba = self.model.predict_proba([last_sequence])[0]
             
+            # Log the probabilities for debugging
+            logging.info(f"Prediction probabilities for {endpoint_type}: {pred_proba}")
+            
             # Handle predictions based on game type
             if endpoint_type in ['teen20', 'dt20']:
                 # For teen20 and dt20, only predict 1 or 2
                 prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                 prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                 
-                # Add some randomness to prevent always predicting 1
-                if abs(prob_1 - prob_2) < 0.1:  # If probabilities are close
-                    # Randomly choose between 1 and 2
-                    pred = "1" if np.random.random() < 0.5 else "2"
+                # Add more randomness to prevent bias
+                if abs(prob_1 - prob_2) < 0.2:  # Increased threshold for random selection
+                    # Randomly choose between 1 and 2 with slight bias towards 2
+                    pred = "1" if np.random.random() < 0.45 else "2"  # 45% chance for 1, 55% for 2
                     confidence = max(prob_1, prob_2)
                 else:
-                    # Choose based on higher probability
-                    if prob_1 > prob_2:
+                    # Choose based on higher probability with a minimum difference
+                    if prob_1 > prob_2 + 0.1:  # Require 10% higher probability to choose 1
                         pred = "1"
                         confidence = float(prob_1)
                     else:
@@ -310,31 +321,31 @@ class PredictionService:
                 prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                 prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                 
-                # Add some randomness to prevent always predicting the same value
+                # Add more randomness to prevent bias
                 max_prob = max(prob_0, prob_1, prob_2)
-                if max_prob < 0.4:  # If no clear winner
-                    # Randomly choose between all options
+                if max_prob < 0.5:  # Increased threshold for random selection
+                    # Randomly choose between all options with slight bias away from 1
                     rand = np.random.random()
-                    if rand < 0.33:
+                    if rand < 0.35:
                         pred = "0"
                         confidence = float(prob_0)
-                    elif rand < 0.66:
-                        pred = "1"
-                        confidence = float(prob_1)
-                    else:
+                    elif rand < 0.65:
                         pred = "2"
                         confidence = float(prob_2)
+                    else:
+                        pred = "1"
+                        confidence = float(prob_1)
                 else:
-                    # Choose based on highest probability
-                    if max_prob == prob_0:
+                    # Choose based on highest probability with minimum difference
+                    if max_prob == prob_0 and prob_0 > prob_1 + 0.1:
                         pred = "0"
                         confidence = float(prob_0)
-                    elif max_prob == prob_1:
-                        pred = "1"
-                        confidence = float(prob_1)
-                    else:
+                    elif max_prob == prob_2 and prob_2 > prob_1 + 0.1:
                         pred = "2"
                         confidence = float(prob_2)
+                    else:
+                        pred = "1"
+                        confidence = float(prob_1)
             
             if confidence < self.min_confidence_threshold:
                 logging.warning(
@@ -416,14 +427,19 @@ class PredictionService:
             if len(X) == 0:
                 return
             
+            # Calculate class weights
+            unique_classes, class_counts = np.unique(y, return_counts=True)
+            class_weights = {cls: len(y) / (len(unique_classes) * count) for cls, count in zip(unique_classes, class_counts)}
+            
             # Train new model with improved parameters
             self.model = RandomForestClassifier(
-                n_estimators=300,
+                n_estimators=200,
                 max_depth=10,
                 min_samples_split=5,
                 min_samples_leaf=2,
                 max_features='sqrt',
-                random_state=42
+                random_state=42,
+                class_weight=class_weights  # Use calculated class weights
             )
             
             # Train the model
@@ -435,6 +451,11 @@ class PredictionService:
                 f"Model updated for {endpoint_type} with {len(X)} samples. "
                 f"Current accuracy: {accuracy:.2f}"
             )
+            
+            # Log class distribution
+            predictions = self.model.predict(X)
+            unique_preds, pred_counts = np.unique(predictions, return_counts=True)
+            logging.info(f"Class distribution in predictions: {dict(zip(unique_preds, pred_counts))}")
             
             # Save the accuracy metrics
             self.db.save_accuracy_metrics(
@@ -493,14 +514,14 @@ class PredictionService:
                     prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                     prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                     
-                    # Add some randomness to prevent always predicting 1
-                    if abs(prob_1 - prob_2) < 0.1:  # If probabilities are close
-                        # Randomly choose between 1 and 2
-                        pred = "1" if np.random.random() < 0.5 else "2"
+                    # Add more randomness to prevent bias
+                    if abs(prob_1 - prob_2) < 0.2:  # Increased threshold for random selection
+                        # Randomly choose between 1 and 2 with slight bias towards 2
+                        pred = "1" if np.random.random() < 0.45 else "2"  # 45% chance for 1, 55% for 2
                         confidence = max(prob_1, prob_2)
                     else:
-                        # Choose based on higher probability
-                        if prob_1 > prob_2:
+                        # Choose based on higher probability with a minimum difference
+                        if prob_1 > prob_2 + 0.1:  # Require 10% higher probability to choose 1
                             pred = "1"
                             confidence = float(prob_1)
                         else:
@@ -512,31 +533,31 @@ class PredictionService:
                     prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                     prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                     
-                    # Add some randomness to prevent always predicting the same value
+                    # Add more randomness to prevent bias
                     max_prob = max(prob_0, prob_1, prob_2)
-                    if max_prob < 0.4:  # If no clear winner
-                        # Randomly choose between all options
+                    if max_prob < 0.5:  # Increased threshold for random selection
+                        # Randomly choose between all options with slight bias away from 1
                         rand = np.random.random()
-                        if rand < 0.33:
+                        if rand < 0.35:
                             pred = "0"
                             confidence = float(prob_0)
-                        elif rand < 0.66:
-                            pred = "1"
-                            confidence = float(prob_1)
-                        else:
+                        elif rand < 0.65:
                             pred = "2"
                             confidence = float(prob_2)
+                        else:
+                            pred = "1"
+                            confidence = float(prob_1)
                     else:
-                        # Choose based on highest probability
-                        if max_prob == prob_0:
+                        # Choose based on highest probability with minimum difference
+                        if max_prob == prob_0 and prob_0 > prob_1 + 0.1:
                             pred = "0"
                             confidence = float(prob_0)
-                        elif max_prob == prob_1:
-                            pred = "1"
-                            confidence = float(prob_1)
-                        else:
+                        elif max_prob == prob_2 and prob_2 > prob_1 + 0.1:
                             pred = "2"
                             confidence = float(prob_2)
+                        else:
+                            pred = "1"
+                            confidence = float(prob_1)
                 
                 if confidence < self.min_confidence_threshold:
                     logging.warning(
