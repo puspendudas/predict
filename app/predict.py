@@ -291,30 +291,50 @@ class PredictionService:
                 prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                 prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                 
-                # Choose between 1 and 2 based on higher probability
-                if prob_1 >= prob_2:
-                    pred = "1"
-                    confidence = float(prob_1)
+                # Add some randomness to prevent always predicting 1
+                if abs(prob_1 - prob_2) < 0.1:  # If probabilities are close
+                    # Randomly choose between 1 and 2
+                    pred = "1" if np.random.random() < 0.5 else "2"
+                    confidence = max(prob_1, prob_2)
                 else:
-                    pred = "2"
-                    confidence = float(prob_2)
+                    # Choose based on higher probability
+                    if prob_1 > prob_2:
+                        pred = "1"
+                        confidence = float(prob_1)
+                    else:
+                        pred = "2"
+                        confidence = float(prob_2)
             else:  # lucky7eu
                 # For lucky7eu, predict 0, 1, or 2
                 prob_0 = pred_proba[0] if len(pred_proba) > 0 else 0
                 prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                 prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                 
-                # Choose between 0, 1, and 2 based on highest probability
+                # Add some randomness to prevent always predicting the same value
                 max_prob = max(prob_0, prob_1, prob_2)
-                if max_prob == prob_0:
-                    pred = "0"
-                    confidence = float(prob_0)
-                elif max_prob == prob_1:
-                    pred = "1"
-                    confidence = float(prob_1)
+                if max_prob < 0.4:  # If no clear winner
+                    # Randomly choose between all options
+                    rand = np.random.random()
+                    if rand < 0.33:
+                        pred = "0"
+                        confidence = float(prob_0)
+                    elif rand < 0.66:
+                        pred = "1"
+                        confidence = float(prob_1)
+                    else:
+                        pred = "2"
+                        confidence = float(prob_2)
                 else:
-                    pred = "2"
-                    confidence = float(prob_2)
+                    # Choose based on highest probability
+                    if max_prob == prob_0:
+                        pred = "0"
+                        confidence = float(prob_0)
+                    elif max_prob == prob_1:
+                        pred = "1"
+                        confidence = float(prob_1)
+                    else:
+                        pred = "2"
+                        confidence = float(prob_2)
             
             if confidence < self.min_confidence_threshold:
                 logging.warning(
@@ -473,28 +493,50 @@ class PredictionService:
                     prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                     prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                     
-                    if prob_1 >= prob_2:
-                        pred = "1"
-                        confidence = float(prob_1)
+                    # Add some randomness to prevent always predicting 1
+                    if abs(prob_1 - prob_2) < 0.1:  # If probabilities are close
+                        # Randomly choose between 1 and 2
+                        pred = "1" if np.random.random() < 0.5 else "2"
+                        confidence = max(prob_1, prob_2)
                     else:
-                        pred = "2"
-                        confidence = float(prob_2)
+                        # Choose based on higher probability
+                        if prob_1 > prob_2:
+                            pred = "1"
+                            confidence = float(prob_1)
+                        else:
+                            pred = "2"
+                            confidence = float(prob_2)
                 else:  # lucky7eu
                     # For lucky7eu, predict 0, 1, or 2
                     prob_0 = pred_proba[0] if len(pred_proba) > 0 else 0
                     prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
                     prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
                     
+                    # Add some randomness to prevent always predicting the same value
                     max_prob = max(prob_0, prob_1, prob_2)
-                    if max_prob == prob_0:
-                        pred = "0"
-                        confidence = float(prob_0)
-                    elif max_prob == prob_1:
-                        pred = "1"
-                        confidence = float(prob_1)
+                    if max_prob < 0.4:  # If no clear winner
+                        # Randomly choose between all options
+                        rand = np.random.random()
+                        if rand < 0.33:
+                            pred = "0"
+                            confidence = float(prob_0)
+                        elif rand < 0.66:
+                            pred = "1"
+                            confidence = float(prob_1)
+                        else:
+                            pred = "2"
+                            confidence = float(prob_2)
                     else:
-                        pred = "2"
-                        confidence = float(prob_2)
+                        # Choose based on highest probability
+                        if max_prob == prob_0:
+                            pred = "0"
+                            confidence = float(prob_0)
+                        elif max_prob == prob_1:
+                            pred = "1"
+                            confidence = float(prob_1)
+                        else:
+                            pred = "2"
+                            confidence = float(prob_2)
                 
                 if confidence < self.min_confidence_threshold:
                     logging.warning(
