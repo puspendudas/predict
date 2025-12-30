@@ -66,8 +66,8 @@ class PredictionService:
             headers = {
                 'User-Agent': 'Mozilla/5.0',
                 'Accept': 'application/json',
-                'Origin': 'https://terminal.apiserver.digital',
-                'Referer': 'https://terminal.apiserver.digital/',
+                'Origin': 'https://terminal.hpterminal.com',
+                'Referer': 'https://terminal.hpterminal.com/',
             }
             
             try:

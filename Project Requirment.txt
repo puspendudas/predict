@@ -36,15 +36,15 @@
 - [x] Defined project scope and technical stack.
 - [x] Developed the ML model and saved it as `model.pkl`.
 - [x] Created FastAPI service to expose prediction endpoint.
-- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/teen20
-- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/dt20
-- [x] Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu
+- [x] Implemented for https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/teen20
+- [x] Implemented for https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/dt20
+- [x] Implemented for https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/lucky7eu
 - [x] Implemented MongoDB integration (optional, pending decision).
 - [x] Dockerized the application for deployment.
 - [x] Deployed on a VPS and tested API performance.
 
 ## **Next Steps**
-- Implemented for https://terminal.apiserver.digital/tunnel/casino/casino-last-10-results/lucky7eu as well
+- Implemented for https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/lucky7eu as well
 - Finalize MongoDB integration if needed.
 - Write Dockerfile and create a Docker container.
 - Deploy the service on a cloud or on-premise server.
