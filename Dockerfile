@@ -15,15 +15,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
+
 # Add the current directory to PYTHONPATH
 ENV PYTHONPATH=/app
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD curl -f http://localhost:7000/predict/teen20 || exit 1
 
 # Expose port
 EXPOSE 7000
 
-# Run with multiple workers for performance
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7000", "--workers", "2"]
+# Use entrypoint script (runs migration then starts app)
+ENTRYPOINT ["/app/entrypoint.sh"]
