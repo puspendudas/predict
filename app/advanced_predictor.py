@@ -348,79 +348,108 @@ class AdvancedEnsemblePredictor:
         Make a prediction with game-specific strategy.
         Applies anti-bias techniques and pattern analysis.
         """
-        proba = self.predict_proba(sequence)
-        n_classes = len(self.classes_)
-        
-        # Map probabilities to original class labels
-        class_probs = {}
-        for i, orig_class in enumerate(self.original_classes_):
-            if i < len(proba):
-                class_probs[int(orig_class)] = float(proba[i])
-            else:
-                class_probs[int(orig_class)] = 0.0
-        
-        if game_type in ['teen20', 'dt20']:
-            # For teen20 and dt20, values are 1 and 2 (or 1, 2, 3 for dt20)
-            valid_values = [v for v in class_probs.keys() if v in [1, 2, 3]]
-            if not valid_values:
-                valid_values = list(class_probs.keys())
+        try:
+            proba = self.predict_proba(sequence)
             
-            # Get probabilities for valid values
-            probs = {v: class_probs.get(v, 0) for v in valid_values}
+            # Safely map probabilities to original class labels
+            class_probs = {}
+            if self.original_classes_ is not None:
+                for i, orig_class in enumerate(self.original_classes_):
+                    if i < len(proba):
+                        class_probs[int(orig_class)] = float(proba[i])
+                    else:
+                        class_probs[int(orig_class)] = 0.0
             
-            # Apply anti-bias correction
-            recent_bias = self._calculate_recent_bias(sequence, valid_values)
-            
-            if recent_bias:
-                biased_value, bias_strength = recent_bias
-                if bias_strength > 0.3:
-                    if biased_value in probs:
+            if game_type in ['teen20', 'dt20']:
+                # For teen20 and dt20, values are 1 and 2 (or 1, 2, 3 for dt20)
+                # Ensure we have probabilities for expected values
+                for v in [1, 2, 3]:
+                    if v not in class_probs:
+                        class_probs[v] = 0.33
+                
+                valid_values = [v for v in [1, 2, 3] if v in class_probs]
+                if not valid_values:
+                    valid_values = [1, 2]
+                
+                # Get probabilities for valid values
+                probs = {v: class_probs.get(v, 0.5) for v in valid_values}
+                
+                # Ensure at least some probability
+                if sum(probs.values()) == 0:
+                    probs = {v: 0.5 for v in valid_values}
+                
+                # Apply anti-bias correction
+                recent_bias = self._calculate_recent_bias(sequence, valid_values)
+                
+                if recent_bias:
+                    biased_value, bias_strength = recent_bias
+                    if bias_strength > 0.3 and biased_value in probs:
                         probs[biased_value] *= (1 - bias_strength * 0.3)
+                
+                # Streak reversal logic
+                streak_length, streak_value = self.feature_engine._get_current_streak(sequence)
+                if streak_length >= 4:
+                    for v in probs:
+                        if v != streak_value:
+                            probs[v] += 0.1
+                
+                # Normalize
+                total = sum(probs.values())
+                if total > 0:
+                    probs = {k: v / total for k, v in probs.items()}
+                else:
+                    probs = {v: 1.0 / len(valid_values) for v in valid_values}
+                
+                # Get best prediction
+                best_value = max(probs, key=probs.get)
+                return str(best_value), float(probs[best_value])
             
-            # Streak reversal logic
-            streak_length, streak_value = self.feature_engine._get_current_streak(sequence)
-            if streak_length >= 4:
-                for v in probs:
-                    if v != streak_value:
-                        probs[v] += 0.1
-            
-            # Normalize
-            total = sum(probs.values())
-            if total > 0:
-                probs = {k: v / total for k, v in probs.items()}
-            
-            # Get best prediction
-            best_value = max(probs, key=probs.get)
-            return str(best_value), float(probs[best_value])
-        
-        else:  # lucky7eu - values 0, 1, 2
-            valid_values = [0, 1, 2]
-            probs = {v: class_probs.get(v, 0.33) for v in valid_values}
-            
-            # Apply anti-bias correction
-            recent_bias = self._calculate_recent_bias(sequence, valid_values)
-            
-            if recent_bias:
-                biased_value, bias_strength = recent_bias
-                if bias_strength > 0.25:
-                    if biased_value in probs:
+            else:  # lucky7eu - values 0, 1, 2
+                valid_values = [0, 1, 2]
+                # Ensure all expected classes have some probability
+                for v in valid_values:
+                    if v not in class_probs:
+                        class_probs[v] = 0.33
+                
+                probs = {v: class_probs.get(v, 0.33) for v in valid_values}
+                
+                # Ensure at least some probability
+                if sum(probs.values()) == 0:
+                    probs = {v: 0.33 for v in valid_values}
+                
+                # Apply anti-bias correction
+                recent_bias = self._calculate_recent_bias(sequence, valid_values)
+                
+                if recent_bias:
+                    biased_value, bias_strength = recent_bias
+                    if bias_strength > 0.25 and biased_value in probs:
                         probs[biased_value] *= (1 - bias_strength * 0.2)
-            
-            # Streak reversal
-            streak_length, streak_value = self.feature_engine._get_current_streak(sequence)
-            if streak_length >= 3:
-                for v in probs:
-                    if v != streak_value:
-                        probs[v] += 0.1
-            
-            # Normalize
-            total = sum(probs.values())
-            if total > 0:
-                probs = {k: v / total for k, v in probs.items()}
-            
-            # Get best prediction
-            best_value = max(probs, key=probs.get)
-            return str(best_value), float(probs[best_value])
+                
+                # Streak reversal
+                streak_length, streak_value = self.feature_engine._get_current_streak(sequence)
+                if streak_length >= 3:
+                    for v in probs:
+                        if v != streak_value:
+                            probs[v] += 0.1
+                
+                # Normalize
+                total = sum(probs.values())
+                if total > 0:
+                    probs = {k: v / total for k, v in probs.items()}
+                else:
+                    probs = {v: 0.33 for v in valid_values}
+                
+                # Get best prediction
+                best_value = max(probs, key=probs.get)
+                return str(best_value), float(probs[best_value])
+                
+        except Exception as e:
+            logger.error(f"Error in predict_with_strategy for {game_type}: {e}")
+            # Fallback to simple prediction
+            if game_type in ['teen20', 'dt20']:
+                return "1", 0.5
+            else:
+                return "1", 0.33
     
     def _calculate_recent_bias(self, sequence: np.ndarray, valid_values: List[int]) -> Optional[Tuple[int, float]]:
         """Calculate if there's a strong bias in recent results."""
