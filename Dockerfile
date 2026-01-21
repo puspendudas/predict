@@ -2,10 +2,11 @@ FROM python:3.9-slim
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including libgomp for LightGBM/XGBoost)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     curl \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install dependencies
