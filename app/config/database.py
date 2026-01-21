@@ -64,7 +64,18 @@ class RedisCache:
         if not self.connected:
             return False
         try:
-            self.client.setex(key, ttl, json.dumps(value))
+            # Convert ObjectId to string for JSON serialization
+            def serialize_value(obj):
+                if isinstance(obj, dict):
+                    return {k: serialize_value(v) for k, v in obj.items() if k != '_id'}
+                elif isinstance(obj, list):
+                    return [serialize_value(item) for item in obj]
+                elif hasattr(obj, '__str__') and type(obj).__name__ == 'ObjectId':
+                    return str(obj)
+                return obj
+            
+            clean_value = serialize_value(value)
+            self.client.setex(key, ttl, json.dumps(clean_value))
             return True
         except Exception as e:
             logger.error(f"Redis set error: {e}")
