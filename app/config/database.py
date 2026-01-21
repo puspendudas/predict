@@ -4,8 +4,9 @@ import os
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Optional
-import certifi
-import ssl
+import redis
+import json
+import time
 from app.config.logging_config import setup_logging
 
 load_dotenv()
@@ -13,55 +14,196 @@ load_dotenv()
 # Initialize logging
 logger = setup_logging()
 
+
+class RedisCache:
+    """Redis caching layer for predictions and results."""
+    
+    def __init__(self):
+        self.client = None
+        self.connected = False
+        self._connect()
+    
+    def _connect(self):
+        """Connect to Redis with retry logic."""
+        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        max_retries = 5
+        retry_delay = 2
+        
+        for attempt in range(max_retries):
+            try:
+                self.client = redis.from_url(
+                    redis_url,
+                    decode_responses=True,
+                    socket_connect_timeout=5
+                )
+                self.client.ping()
+                self.connected = True
+                logger.info("Successfully connected to Redis")
+                return
+            except Exception as e:
+                logger.warning(f"Redis connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        
+        logger.warning("Redis not available, caching disabled")
+        self.connected = False
+    
+    def get(self, key: str) -> Optional[dict]:
+        """Get cached value."""
+        if not self.connected:
+            return None
+        try:
+            value = self.client.get(key)
+            return json.loads(value) if value else None
+        except Exception as e:
+            logger.error(f"Redis get error: {e}")
+            return None
+    
+    def set(self, key: str, value: dict, ttl: int = 30) -> bool:
+        """Set cached value with TTL in seconds."""
+        if not self.connected:
+            return False
+        try:
+            self.client.setex(key, ttl, json.dumps(value))
+            return True
+        except Exception as e:
+            logger.error(f"Redis set error: {e}")
+            return False
+    
+    def delete(self, key: str) -> bool:
+        """Delete cached value."""
+        if not self.connected:
+            return False
+        try:
+            self.client.delete(key)
+            return True
+        except Exception as e:
+            logger.error(f"Redis delete error: {e}")
+            return False
+
+
 class Database:
     def __init__(self):
+        self.cache = RedisCache()
+        self._connect_mongodb()
+    
+    def _connect_mongodb(self):
+        """Connect to MongoDB with retry logic for Docker startup."""
+        mongodb_url = os.getenv("MONGODB_URL")
+        max_retries = 10
+        retry_delay = 3
+        
+        for attempt in range(max_retries):
+            try:
+                # Connect with settings optimized for internal Docker MongoDB
+                self.client = MongoClient(
+                    mongodb_url,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=10000,
+                    socketTimeoutMS=30000,
+                    maxPoolSize=50,
+                    minPoolSize=5,
+                    retryWrites=True,
+                    retryReads=True
+                )
+                
+                # Test the connection
+                self.client.server_info()
+                
+                self.db = self.client[os.getenv("DATABASE_NAME")]
+                self.collection = self.db[os.getenv("COLLECTION_NAME")]
+                self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
+                self.model_accuracy = self.db[os.getenv("MODEL_ACCURACY_COLLECTION")]
+                
+                # Create indexes (idempotent)
+                self._create_indexes()
+                
+                logger.info("Successfully connected to MongoDB")
+                return
+            except Exception as e:
+                logger.warning(f"MongoDB connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        
+        raise Exception("Failed to connect to MongoDB after maximum retries")
+    
+    def _create_indexes(self):
+        """Create database indexes for optimal query performance."""
         try:
-            # Connect with simplified SSL settings
-            self.client = MongoClient(
-                os.getenv("MONGODB_URL"),
-                tlsCAFile=certifi.where(),
-                tlsAllowInvalidCertificates=True  # Temporarily allow invalid certificates for testing
+            # Results collection indexes
+            self.collection.create_index(
+                [("mid", 1), ("endpoint_type", 1)], 
+                unique=True,
+                background=True
+            )
+            self.collection.create_index(
+                [("endpoint_type", 1), ("timestamp", -1)],
+                background=True
             )
             
-            # Test the connection
-            self.client.server_info()
+            # Prediction history indexes
+            self.prediction_history.create_index(
+                [("mid", 1), ("endpoint_type", 1)],
+                background=True
+            )
+            self.prediction_history.create_index(
+                [("timestamp", -1)],
+                background=True
+            )
+            self.prediction_history.create_index(
+                [("endpoint_type", 1), ("verified", 1), ("timestamp", -1)],
+                background=True
+            )
             
-            self.db = self.client[os.getenv("DATABASE_NAME")]
-            self.collection = self.db[os.getenv("COLLECTION_NAME")]
-            self.prediction_history = self.db[os.getenv("PREDICTION_HISTORY_COLLECTION")]
-            self.model_accuracy = self.db[os.getenv("MODEL_ACCURACY_COLLECTION")]
+            # Model accuracy indexes
+            self.model_accuracy.create_index(
+                [("endpoint_type", 1), ("timestamp", -1)],
+                background=True
+            )
             
-            # Create indexes
-            self.collection.create_index([("mid", 1), ("endpoint_type", 1)], unique=True)
-            self.prediction_history.create_index([("mid", 1), ("endpoint_type", 1)])
-            self.prediction_history.create_index("timestamp")
-            self.model_accuracy.create_index([("endpoint_type", 1), ("timestamp", -1)])
-            
-            logger.info("Successfully connected to MongoDB")
+            logger.info("Database indexes created successfully")
         except Exception as e:
-            logger.error(f"Failed to connect to MongoDB: {str(e)}")
-            raise
+            logger.warning(f"Error creating indexes (may already exist): {e}")
 
     def insert_result(self, data: Dict, endpoint_type: str) -> Optional[Dict]:
         """Insert a new result into the database."""
         try:
             data['endpoint_type'] = endpoint_type
             data['timestamp'] = datetime.now().isoformat()
-            return self.collection.update_one(
+            result = self.collection.update_one(
                 {"mid": data["mid"], "endpoint_type": endpoint_type},
                 {"$setOnInsert": data},
                 upsert=True
             )
+            
+            # Invalidate cache for this endpoint
+            self.cache.delete(f"last_results:{endpoint_type}")
+            
+            return result
         except Exception as e:
             logger.error(f"Error inserting result: {str(e)}")
             return None
 
     def get_last_n_results(self, n: int, endpoint_type: str) -> List[Dict]:
-        """Get the last n results for a specific endpoint."""
-        return list(self.collection.find(
+        """Get the last n results for a specific endpoint with caching."""
+        cache_key = f"last_results:{endpoint_type}:{n}"
+        
+        # Try cache first for small queries
+        if n <= 100:
+            cached = self.cache.get(cache_key)
+            if cached:
+                return cached
+        
+        results = list(self.collection.find(
             {"endpoint_type": endpoint_type},
             {"_id": 0}
         ).sort("mid", -1).limit(n))
+        
+        # Cache for 10 seconds
+        if n <= 100 and results:
+            self.cache.set(cache_key, results, ttl=10)
+        
+        return results
 
     def save_prediction(self, mid: str, predicted_value: str, timestamp: str, endpoint_type: str, confidence: float = 0.0) -> Optional[Dict]:
         """Save a new prediction with confidence score."""
@@ -94,7 +236,13 @@ class Database:
             result = self.prediction_history.insert_one(prediction_doc)
             
             if result.inserted_id:
-                # Verify the saved document
+                # Cache the prediction
+                self.cache.set(
+                    f"prediction:{endpoint_type}:{mid}",
+                    prediction_doc,
+                    ttl=300  # 5 minutes
+                )
+                
                 saved_prediction = self.prediction_history.find_one({"_id": result.inserted_id})
                 if saved_prediction:
                     logger.info(f"Successfully saved prediction for {endpoint_type} - MID: {mid}")
@@ -111,7 +259,14 @@ class Database:
             return None
 
     def get_prediction(self, mid: str, endpoint_type: str) -> Optional[Dict]:
-        """Get a prediction by MID and endpoint type."""
+        """Get a prediction by MID and endpoint type with caching."""
+        cache_key = f"prediction:{endpoint_type}:{mid}"
+        
+        # Try cache first
+        cached = self.cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
             # First try to get unverified prediction
             prediction = self.prediction_history.find_one({
@@ -129,6 +284,9 @@ class Database:
                 }, sort=[("timestamp", -1)])
             
             if prediction:
+                # Convert ObjectId for caching
+                prediction_copy = {k: v for k, v in prediction.items() if k != '_id'}
+                self.cache.set(cache_key, prediction_copy, ttl=60)
                 logger.info(f"Found prediction for {endpoint_type} - MID: {mid}")
             else:
                 logger.info(f"No prediction found for {endpoint_type} - MID: {mid}")
@@ -182,6 +340,10 @@ class Database:
                     )
                     return False
                 
+                # Invalidate cache
+                self.cache.delete(f"prediction:{endpoint_type}:{mid}")
+                self.cache.delete(f"accuracy:{endpoint_type}")
+                
                 # Verify the update
                 updated_prediction = self.prediction_history.find_one({"_id": prediction["_id"]})
                 if updated_prediction and updated_prediction.get("verified"):
@@ -222,7 +384,14 @@ class Database:
             return False
 
     def get_accuracy_metrics(self, endpoint_type: str, last_n_days: Optional[int] = 7) -> Dict:
-        """Get accuracy metrics for a specific endpoint."""
+        """Get accuracy metrics for a specific endpoint with caching."""
+        cache_key = f"accuracy:{endpoint_type}:{last_n_days}"
+        
+        # Try cache first
+        cached = self.cache.get(cache_key)
+        if cached:
+            return cached
+        
         try:
             match_condition = {
                 "verified": True,
@@ -257,10 +426,14 @@ class Database:
                     f"Correct: {metrics['correct']}, "
                     f"Accuracy: {metrics['accuracy']:.2f}"
                 )
+                
+                # Cache for 30 seconds
+                self.cache.set(cache_key, metrics, ttl=30)
                 return metrics
                 
             logger.warning(f"No accuracy metrics found for {endpoint_type}")
-            return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
+            default_metrics = {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
+            return default_metrics
         except Exception as e:
             logger.error(f"Error getting accuracy metrics: {str(e)}")
             return {"total": 0, "correct": 0, "incorrect": 0, "accuracy": 0, "avg_confidence": 0}
@@ -300,15 +473,20 @@ class Database:
     def save_accuracy_metrics(self, accuracy: float, total_predictions: int, endpoint_type: str) -> Optional[Dict]:
         """Save accuracy metrics for a specific endpoint."""
         try:
-            return self.model_accuracy.insert_one({
+            result = self.model_accuracy.insert_one({
                 "timestamp": datetime.now().isoformat(),
                 "accuracy": accuracy,
                 "total_predictions": total_predictions,
                 "endpoint_type": endpoint_type,
-                "model_version": "1.0",  # Track model versions
+                "model_version": "2.0",  # Updated model version
                 "training_samples": total_predictions,
                 "last_updated": datetime.now().isoformat()
             })
+            
+            # Invalidate accuracy cache
+            self.cache.delete(f"accuracy:{endpoint_type}")
+            
+            return result
         except Exception as e:
             logger.error(f"Error saving accuracy metrics: {str(e)}")
             return None

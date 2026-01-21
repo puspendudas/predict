@@ -4,6 +4,7 @@ import requests
 import json
 import os
 from .config.database import Database
+from .advanced_predictor import AdvancedEnsemblePredictor
 from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Tuple, Optional
@@ -12,6 +13,7 @@ import urllib3
 import certifi
 import asyncio
 import threading
+import httpx
 from app.config.logging_config import setup_logging
 
 # Disable SSL warnings
@@ -20,20 +22,20 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # Initialize logging
 logger = setup_logging()
 
+
 class PredictionService:
     def __init__(self):
-        self.model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=10,
-            min_samples_split=5,
-            min_samples_leaf=2,
-            max_features='sqrt',
-            random_state=42,
-            class_weight='balanced'  # Add class weight balancing
-        )
         self.db = Database()
         self.last_predictions = {}
         self.last_mids = {}  # Store last seen MID for each game type
+        
+        # Configuration from environment
+        self.sequence_length = int(os.getenv("SEQUENCE_LENGTH", "20"))
+        self.max_samples_for_training = int(os.getenv("MAX_TRAINING_SAMPLES", "2000"))
+        self.min_samples_for_training = int(os.getenv("MIN_TRAINING_SAMPLES", "50"))
+        self.min_confidence_threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
+        self.accuracy_threshold = float(os.getenv("ACCURACY_THRESHOLD", "0.6"))
+        
         self.endpoints = {
             'teen20': os.getenv('TEEN20_ODDS_API_URL'),
             'lucky7eu': os.getenv('LUCKY7EU_ODDS_API_URL'),
@@ -44,16 +46,40 @@ class PredictionService:
             'lucky7eu': os.getenv('LUCKY7EU_RESULTS_API_URL'),
             'dt20': os.getenv('DT20_RESULTS_API_URL')
         }
+        
         self.verification_interval = 5  # seconds
-        self.prediction_interval = 30  # seconds - generate predictions every 30 seconds
-        self.min_confidence_threshold = 0.4
-        self.accuracy_threshold = 0.6
-        self.min_samples_for_training = 20
-        self.max_samples_for_training = 500
-        self.sequence_length = 8
+        self.prediction_interval = 30  # seconds
         self.prediction_window = 2
         self.verification_threads = {}
         self.prediction_threads = {}
+        
+        # Initialize advanced ensemble predictors for each game type
+        self.ensemble_predictors = {
+            'teen20': AdvancedEnsemblePredictor('teen20'),
+            'lucky7eu': AdvancedEnsemblePredictor('lucky7eu'),
+            'dt20': AdvancedEnsemblePredictor('dt20')
+        }
+        
+        # HTTP client for faster requests
+        self.http_client = None
+        self._init_http_client()
+    
+    def _init_http_client(self):
+        """Initialize async HTTP client with connection pooling."""
+        try:
+            # Use a shared session for connection pooling
+            self.session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(
+                pool_connections=10,
+                pool_maxsize=20,
+                max_retries=3
+            )
+            self.session.mount('https://', adapter)
+            self.session.mount('http://', adapter)
+            logger.info("HTTP client initialized with connection pooling")
+        except Exception as e:
+            logger.error(f"Error initializing HTTP client: {e}")
+            self.session = requests.Session()
 
     def fetch_latest_data(self, endpoint_type='teen20') -> Tuple[List[Dict], Optional[str], Optional[Dict]]:
         """Fetch latest data and return results, current MID, and game info."""
@@ -71,11 +97,11 @@ class PredictionService:
             }
             
             try:
-                response = requests.get(odds_url, headers=headers, verify=certifi.where())
+                response = self.session.get(odds_url, headers=headers, verify=certifi.where(), timeout=5)
                 response.raise_for_status()
                 odds_data = response.json()
             except requests.exceptions.SSLError:
-                response = requests.get(odds_url, headers=headers, verify=False)
+                response = self.session.get(odds_url, headers=headers, verify=False, timeout=5)
                 response.raise_for_status()
                 odds_data = response.json()
             except requests.exceptions.RequestException as e:
@@ -83,7 +109,7 @@ class PredictionService:
                 return [], None, None
             
             # Log the full response for debugging
-            logging.info(f"Odds API response for {endpoint_type}: {json.dumps(odds_data, indent=2)}")
+            logging.debug(f"Odds API response for {endpoint_type}: {json.dumps(odds_data, indent=2)}")
             
             # Get current MID and game info from t1
             current_mid = None
@@ -113,7 +139,7 @@ class PredictionService:
                 t1_data = t1_data[0]
                 current_mid = t1_data.get("mid")
                 if current_mid:
-                    logging.info(f"Found current MID for {endpoint_type}: {current_mid}")
+                    logging.debug(f"Found current MID for {endpoint_type}: {current_mid}")
                 else:
                     logging.warning(f"No MID found in t1 data for {endpoint_type}")
                 
@@ -133,21 +159,18 @@ class PredictionService:
                 raise ValueError(f"Invalid results endpoint type: {endpoint_type}")
             
             try:
-                response = requests.get(results_url, headers=headers, verify=certifi.where())
+                response = self.session.get(results_url, headers=headers, verify=certifi.where(), timeout=5)
                 response.raise_for_status()
                 results_data = response.json()
             except requests.exceptions.SSLError:
-                response = requests.get(results_url, headers=headers, verify=False)
+                response = self.session.get(results_url, headers=headers, verify=False, timeout=5)
                 response.raise_for_status()
                 results_data = response.json()
             except requests.exceptions.RequestException as e:
                 logging.error(f"Error fetching results data for {endpoint_type}: {str(e)}")
                 return [], current_mid, game_info
             
-            # Log the full response for debugging
-            logging.info(f"Results API response for {endpoint_type}: {json.dumps(results_data, indent=2)}")
-            
-            # Get results and log only the results section
+            # Get results
             results = []
             if "data" in results_data:
                 if isinstance(results_data["data"], dict):
@@ -168,13 +191,7 @@ class PredictionService:
                     results = results_data.get("result", [])
             
             if results:
-                logging.info(f"Results for {endpoint_type}:")
-                for result in results:
-                    logging.info(
-                        f"MID: {result.get('mid')}, "
-                        f"Value: {result.get('result')}, "
-                        f"Time: {result.get('time')}"
-                    )
+                logging.debug(f"Got {len(results)} results for {endpoint_type}")
             
             return results, current_mid, game_info
         except Exception as e:
@@ -190,21 +207,13 @@ class PredictionService:
                 results, current_mid, _ = self.fetch_latest_data(endpoint_type)
                 if not results:
                     logging.warning(f"No results found for {endpoint_type}")
-                    time.sleep(1)  # Check every second
+                    time.sleep(1)
                     continue
-
-                # Log the results for debugging
-                logging.info(f"Received {len(results)} results for {endpoint_type}")
-                for result in results:
-                    logging.info(f"Result data: MID: {result.get('mid')}, Value: {result.get('result')}")
 
                 # Process each result
                 for result in results:
                     result_mid = result["mid"]
                     actual_value = result["result"]
-                    
-                    # Log the result we're processing
-                    logging.info(f"Processing result for {endpoint_type} - MID: {result_mid}, Value: {actual_value}")
                     
                     # Find unverified prediction for this MID
                     prediction = self.db.prediction_history.find_one({
@@ -217,12 +226,9 @@ class PredictionService:
                         predicted_value = prediction["predicted_value"]
                         was_correct = actual_value == predicted_value
                         
-                        # Log the prediction we found
                         logging.info(
-                            f"Found unverified prediction for {endpoint_type} - "
-                            f"MID: {result_mid}, "
-                            f"Predicted: {predicted_value}, "
-                            f"Actual: {actual_value}, "
+                            f"Verifying {endpoint_type} - MID: {result_mid}, "
+                            f"Predicted: {predicted_value}, Actual: {actual_value}, "
                             f"Correct: {was_correct}"
                         )
                         
@@ -238,114 +244,39 @@ class PredictionService:
                             # Save the actual result
                             self.db.insert_result(result, endpoint_type)
                             
-                            # Verify the update in prediction_history
-                            updated_prediction = self.db.prediction_history.find_one({
-                                "mid": result_mid,
-                                "endpoint_type": endpoint_type
-                            })
-                            
-                            if updated_prediction and updated_prediction.get("verified"):
-                                logging.info(
-                                        f"Successfully verified prediction for {endpoint_type} - "
-                                        f"MID: {result_mid}, "
-                                        f"Predicted: {predicted_value}, "
-                                        f"Actual: {actual_value}, "
-                                        f"Correct: {was_correct}, "
-                                        f"Verification Time: {updated_prediction.get('verification_timestamp')}"
-                                    )
-                            else:
-                                logging.error(
-                                    f"Prediction verification failed for {endpoint_type} - "
-                                    f"MID: {result_mid}"
-                            )
-                        else:
-                            logging.error(
-                                f"Failed to update prediction for {endpoint_type} - MID: {result_mid}"
-                            )
-                    else:
-                        logging.info(f"No unverified prediction found for {endpoint_type} - MID: {result_mid}")
+                            # Check if model needs retraining
+                            self.check_and_update_model(endpoint_type)
                 
-                time.sleep(1)  # Check every second
+                time.sleep(1)
             except Exception as e:
                 logging.error(f"Error in verification loop for {endpoint_type}: {str(e)}")
-                time.sleep(1)  # Check every second
+                time.sleep(1)
 
     def generate_prediction_for_mid(self, mid: str, endpoint_type: str) -> None:
-        """Generate prediction for a specific MID."""
+        """Generate prediction for a specific MID using ensemble predictor."""
         try:
             # Get historical data for prediction
-            historical_data = self.db.get_last_n_results(1500, endpoint_type)
+            historical_data = self.db.get_last_n_results(self.max_samples_for_training, endpoint_type)
             if len(historical_data) < self.min_samples_for_training:
                 logging.warning(f"Insufficient historical data for {endpoint_type}: {len(historical_data)} samples")
                 return
             
+            predictor = self.ensemble_predictors[endpoint_type]
+            
             # Ensure model is fitted
-            if not hasattr(self.model, "fitted_") or not self.model.fitted_:
-                logging.info(f"Training model for {endpoint_type} with {len(historical_data)} samples")
-                self.update_model(endpoint_type)
+            if not predictor.fitted:
+                logging.info(f"Training ensemble model for {endpoint_type} with {len(historical_data)} samples")
+                accuracy = predictor.fit(historical_data)
+                logging.info(f"Ensemble model trained for {endpoint_type} with accuracy: {accuracy:.4f}")
             
-            # Prepare data and generate prediction
-            X, y = self.prepare_data(historical_data, self.sequence_length)
-            if len(X) == 0:
-                logging.warning(f"No valid sequences found for {endpoint_type}")
-                return
+            # Prepare the latest sequence for prediction
+            results = [int(d["result"]) for d in historical_data[:self.sequence_length]]
+            last_sequence = np.array(results[::-1])  # Reverse to get chronological order
             
-            last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
-            pred_proba = self.model.predict_proba([last_sequence])[0]
+            # Generate prediction using game-specific strategy
+            pred, confidence = predictor.predict_with_strategy(last_sequence, endpoint_type)
             
-            # Log the probabilities for debugging
-            logging.info(f"Prediction probabilities for {endpoint_type}: {pred_proba}")
-            
-            # Handle predictions based on game type
-            if endpoint_type in ['teen20', 'dt20']:
-                # For teen20 and dt20, only predict 1 or 2
-                prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                
-                # Add more randomness to prevent bias
-                if abs(prob_1 - prob_2) < 0.2:  # Increased threshold for random selection
-                    # Randomly choose between 1 and 2 with slight bias towards 2
-                    pred = "1" if np.random.random() < 0.45 else "2"  # 45% chance for 1, 55% for 2
-                    confidence = max(prob_1, prob_2)
-                else:
-                    # Choose based on higher probability with a minimum difference
-                    if prob_1 > prob_2 + 0.1:  # Require 10% higher probability to choose 1
-                        pred = "1"
-                        confidence = float(prob_1)
-                    else:
-                        pred = "2"
-                        confidence = float(prob_2)
-            else:  # lucky7eu
-                # For lucky7eu, predict 0, 1, or 2
-                prob_0 = pred_proba[0] if len(pred_proba) > 0 else 0
-                prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                
-                # Add more randomness to prevent bias
-                max_prob = max(prob_0, prob_1, prob_2)
-                if max_prob < 0.5:  # Increased threshold for random selection
-                    # Randomly choose between all options with slight bias away from 1
-                    rand = np.random.random()
-                    if rand < 0.35:
-                        pred = "0"
-                        confidence = float(prob_0)
-                    elif rand < 0.65:
-                        pred = "2"
-                        confidence = float(prob_2)
-                    else:
-                        pred = "1"
-                        confidence = float(prob_1)
-                else:
-                    # Choose based on highest probability with minimum difference
-                    if max_prob == prob_0 and prob_0 > prob_1 + 0.1:
-                        pred = "0"
-                        confidence = float(prob_0)
-                    elif max_prob == prob_2 and prob_2 > prob_1 + 0.1:
-                        pred = "2"
-                        confidence = float(prob_2)
-                    else:
-                        pred = "1"
-                        confidence = float(prob_1)
+            logging.info(f"Prediction for {endpoint_type}: {pred} (confidence: {confidence:.4f})")
             
             if confidence < self.min_confidence_threshold:
                 logging.warning(
@@ -361,7 +292,7 @@ class PredictionService:
                 self.last_predictions[mid] = pred
                 logging.info(
                     f"Successfully saved prediction for {endpoint_type} - "
-                    f"MID: {mid}, Value: {pred}, Confidence: {confidence}"
+                    f"MID: {mid}, Value: {pred}, Confidence: {confidence:.4f}"
                 )
             else:
                 logging.error(f"Failed to save prediction for {endpoint_type} - MID: {mid}")
@@ -410,7 +341,7 @@ class PredictionService:
             logging.error(f"Error checking model for {endpoint_type}: {str(e)}")
 
     def update_model(self, endpoint_type: str) -> None:
-        """Update the model with recent data."""
+        """Update the ensemble model with recent data."""
         try:
             # Get historical data for training
             historical_data = self.db.get_last_n_results(
@@ -422,157 +353,57 @@ class PredictionService:
                 logging.warning(f"Insufficient data for model update: {len(historical_data)} samples")
                 return
             
-            # Prepare training data
-            X, y = self.prepare_data(historical_data, self.sequence_length)
-            if len(X) == 0:
-                return
+            predictor = self.ensemble_predictors[endpoint_type]
             
-            # Calculate class weights
-            unique_classes, class_counts = np.unique(y, return_counts=True)
-            class_weights = {cls: len(y) / (len(unique_classes) * count) for cls, count in zip(unique_classes, class_counts)}
+            # Retrain the ensemble
+            accuracy = predictor.fit(historical_data)
             
-            # Train new model with improved parameters
-            self.model = RandomForestClassifier(
-                n_estimators=200,
-                max_depth=10,
-                min_samples_split=5,
-                min_samples_leaf=2,
-                max_features='sqrt',
-                random_state=42,
-                class_weight=class_weights  # Use calculated class weights
-            )
-            
-            # Train the model
-            self.model.fit(X, y)
-            
-            # Calculate and log the accuracy
-            accuracy = self.calculate_accuracy(X, y)
             logging.info(
-                f"Model updated for {endpoint_type} with {len(X)} samples. "
-                f"Current accuracy: {accuracy:.2f}"
+                f"Ensemble model updated for {endpoint_type} with {len(historical_data)} samples. "
+                f"New accuracy: {accuracy:.4f}"
             )
-            
-            # Log class distribution
-            predictions = self.model.predict(X)
-            unique_preds, pred_counts = np.unique(predictions, return_counts=True)
-            logging.info(f"Class distribution in predictions: {dict(zip(unique_preds, pred_counts))}")
             
             # Save the accuracy metrics
             self.db.save_accuracy_metrics(
                 accuracy=accuracy,
-                total_predictions=len(X),
+                total_predictions=len(historical_data),
                 endpoint_type=endpoint_type
             )
             
         except Exception as e:
             logging.error(f"Error updating model for {endpoint_type}: {str(e)}")
 
-    def calculate_accuracy(self, X: np.ndarray, y: np.ndarray) -> float:
-        """Calculate model accuracy on training data."""
-        predictions = self.model.predict(X)
-        return np.mean(predictions == y)
-
-    def prepare_data(self, data: List[Dict], sequence_length: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Prepare training data from historical results."""
-        X, y = [], []
-        results = [int(d["result"]) for d in data]
-        
-        for i in range(len(results) - sequence_length):
-            X.append(results[i:i+sequence_length])
-            y.append(results[i+sequence_length])
-            
-        return np.array(X), np.array(y)
-
     def predict_next_rounds(self, endpoint_type='teen20', n_predictions=2) -> List[str]:
         """Generate predictions for the next rounds."""
         try:
-            historical_data = self.db.get_last_n_results(1500, endpoint_type)
+            historical_data = self.db.get_last_n_results(self.max_samples_for_training, endpoint_type)
             if len(historical_data) < self.min_samples_for_training:
                 logging.warning(f"Insufficient historical data for {endpoint_type}: {len(historical_data)} samples")
                 return ["0"] * n_predictions
-                
-            # Always ensure model is fitted before making predictions
-            if not hasattr(self.model, "fitted_") or not self.model.fitted_:
-                logging.info(f"Training model for {endpoint_type} with {len(historical_data)} samples")
-                self.update_model(endpoint_type)
             
-            X, y = self.prepare_data(historical_data, self.sequence_length)
-            if len(X) == 0:
-                logging.warning(f"No valid sequences found for {endpoint_type}")
-                return ["0"] * n_predictions
+            predictor = self.ensemble_predictors[endpoint_type]
+            
+            # Ensure model is fitted
+            if not predictor.fitted:
+                logging.info(f"Training ensemble model for {endpoint_type} with {len(historical_data)} samples")
+                predictor.fit(historical_data)
             
             current_time = datetime.now().isoformat()
-            last_sequence = np.array([int(d["result"]) for d in historical_data[-self.sequence_length:]])
+            results = [int(d["result"]) for d in historical_data[:self.sequence_length]]
+            last_sequence = np.array(results[::-1])
             
             predictions = []
             for _ in range(n_predictions):
-                pred_proba = self.model.predict_proba([last_sequence])[0]
-                
-                # Handle predictions based on game type
-                if endpoint_type in ['teen20', 'dt20']:
-                    # For teen20 and dt20, only predict 1 or 2
-                    prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                    prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                    
-                    # Add more randomness to prevent bias
-                    if abs(prob_1 - prob_2) < 0.2:  # Increased threshold for random selection
-                        # Randomly choose between 1 and 2 with slight bias towards 2
-                        pred = "1" if np.random.random() < 0.45 else "2"  # 45% chance for 1, 55% for 2
-                        confidence = max(prob_1, prob_2)
-                    else:
-                        # Choose based on higher probability with a minimum difference
-                        if prob_1 > prob_2 + 0.1:  # Require 10% higher probability to choose 1
-                            pred = "1"
-                            confidence = float(prob_1)
-                        else:
-                            pred = "2"
-                            confidence = float(prob_2)
-                else:  # lucky7eu
-                    # For lucky7eu, predict 0, 1, or 2
-                    prob_0 = pred_proba[0] if len(pred_proba) > 0 else 0
-                    prob_1 = pred_proba[1] if len(pred_proba) > 1 else 0
-                    prob_2 = pred_proba[2] if len(pred_proba) > 2 else 0
-                    
-                    # Add more randomness to prevent bias
-                    max_prob = max(prob_0, prob_1, prob_2)
-                    if max_prob < 0.5:  # Increased threshold for random selection
-                        # Randomly choose between all options with slight bias away from 1
-                        rand = np.random.random()
-                        if rand < 0.35:
-                            pred = "0"
-                            confidence = float(prob_0)
-                        elif rand < 0.65:
-                            pred = "2"
-                            confidence = float(prob_2)
-                        else:
-                            pred = "1"
-                            confidence = float(prob_1)
-                    else:
-                        # Choose based on highest probability with minimum difference
-                        if max_prob == prob_0 and prob_0 > prob_1 + 0.1:
-                            pred = "0"
-                            confidence = float(prob_0)
-                        elif max_prob == prob_2 and prob_2 > prob_1 + 0.1:
-                            pred = "2"
-                            confidence = float(prob_2)
-                        else:
-                            pred = "1"
-                            confidence = float(prob_1)
-                
-                if confidence < self.min_confidence_threshold:
-                    logging.warning(
-                        f"Low confidence prediction for {endpoint_type}: {confidence:.2f}. "
-                        f"Consider retraining model."
-                    )
-                
+                pred, confidence = predictor.predict_with_strategy(last_sequence, endpoint_type)
                 predictions.append(pred)
+                # Update sequence for next prediction
                 last_sequence = np.append(last_sequence[1:], int(pred))
             
             # Save predictions with confidence scores
             next_mid = str(int(historical_data[0]["mid"]) + 1)
-            for i, (pred, confidence) in enumerate(zip(predictions, [float(np.max(self.model.predict_proba([last_sequence])[0])) for _ in range(n_predictions)])):
+            for i, pred in enumerate(predictions):
                 pred_mid = str(int(next_mid) + i)
-                self.db.save_prediction(pred_mid, pred, current_time, endpoint_type, confidence)
+                self.db.save_prediction(pred_mid, pred, current_time, endpoint_type, 0.5)
                 self.last_predictions[pred_mid] = pred
             
             return predictions
@@ -590,7 +421,7 @@ class PredictionService:
                 results, current_mid, _ = self.fetch_latest_data(endpoint_type)
                 if not current_mid:
                     logging.warning(f"No current MID found for {endpoint_type}")
-                    time.sleep(1)  # Check every second
+                    time.sleep(1)
                     continue
 
                 # Check if this is a new MID
@@ -601,23 +432,11 @@ class PredictionService:
                     
                     # Generate prediction for new MID
                     self.generate_prediction_for_mid(current_mid, endpoint_type)
-                    
-                    # Log the prediction details
-                    prediction = self.db.get_prediction(current_mid, endpoint_type)
-                    if prediction:
-                        logging.info(
-                            f"Generated and saved prediction for {endpoint_type} - "
-                            f"MID: {current_mid}, "
-                            f"Value: {prediction['predicted_value']}, "
-                            f"Confidence: {prediction['confidence']}"
-                        )
-                    else:
-                        logging.error(f"Failed to save prediction for {endpoint_type} - MID: {current_mid}")
                 
-                time.sleep(1)  # Check every second
+                time.sleep(1)
             except Exception as e:
                 logging.error(f"Error in prediction generation loop for {endpoint_type}: {str(e)}")
-                time.sleep(1)  # Check every second
+                time.sleep(1)
 
     def start_prediction_loop(self, endpoint_type: str):
         """Start a prediction generation loop in a separate thread."""
