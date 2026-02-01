@@ -18,12 +18,12 @@ services:
       - PREDICTION_HISTORY_COLLECTION=prediction_history
       - MODEL_ACCURACY_COLLECTION=model_accuracy
       - REDIS_URL=redis://redis:6379
-      - TEEN20_RESULTS_API_URL=https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/teen20
-      - LUCKY7EU_RESULTS_API_URL=https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/lucky7eu
-      - DT20_RESULTS_API_URL=https://terminal.hpterminal.com/tunnel/casino/casino-last-10-results/dt20
-      - TEEN20_ODDS_API_URL=https://terminal.hpterminal.com/tunnel/casino/odds/teen20
-      - LUCKY7EU_ODDS_API_URL=https://terminal.hpterminal.com/tunnel/casino/odds/lucky7eu
-      - DT20_ODDS_API_URL=https://terminal.hpterminal.com/tunnel/casino/odds/dt20
+      - TEEN20_RESULTS_API_URL=https://data.hpterminal.com/tunnel/casino/casino-last-10-results/teen20
+      - LUCKY7EU_RESULTS_API_URL=https://data.hpterminal.com/tunnel/casino/casino-last-10-results/lucky7eu
+      - DT20_RESULTS_API_URL=https://data.hpterminal.com/tunnel/casino/casino-last-10-results/dt20
+      - TEEN20_ODDS_API_URL=https://data.hpterminal.com/tunnel/casino/odds/teen20
+      - LUCKY7EU_ODDS_API_URL=https://data.hpterminal.com/tunnel/casino/odds/lucky7eu
+      - DT20_ODDS_API_URL=https://data.hpterminal.com/tunnel/casino/odds/dt20
     volumes:
       - ./app:/app/app
     networks:

@@ -119,8 +119,8 @@ async def proxy_request(game_type: str):
         headers = {
             'User-Agent': 'Mozilla/5.0',
             'Accept': 'application/json',
-            'Origin': 'https://terminal.hpterminal.com',
-            'Referer': 'https://terminal.hpterminal.com/',
+            'Origin': 'https://data.hpterminal.com',
+            'Referer': 'https://data.hpterminal.com/',
         }
         
         # Try with SSL verification first, fall back to unverified if needed
