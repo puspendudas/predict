@@ -29,12 +29,12 @@ class PredictionService:
         self.last_predictions = {}
         self.last_mids = {}  # Store last seen MID for each game type
         
-        # Configuration from environment
-        self.sequence_length = int(os.getenv("SEQUENCE_LENGTH", "20"))
-        self.max_samples_for_training = int(os.getenv("MAX_TRAINING_SAMPLES", "2000"))
-        self.min_samples_for_training = int(os.getenv("MIN_TRAINING_SAMPLES", "50"))
-        self.min_confidence_threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.35"))
-        self.accuracy_threshold = float(os.getenv("ACCURACY_THRESHOLD", "0.6"))
+        # Configuration from environment - optimized for higher accuracy
+        self.sequence_length = int(os.getenv("SEQUENCE_LENGTH", "30"))
+        self.max_samples_for_training = int(os.getenv("MAX_TRAINING_SAMPLES", "3000"))
+        self.min_samples_for_training = int(os.getenv("MIN_TRAINING_SAMPLES", "40"))
+        self.min_confidence_threshold = float(os.getenv("CONFIDENCE_THRESHOLD", "0.30"))
+        self.accuracy_threshold = float(os.getenv("ACCURACY_THRESHOLD", "0.65"))
         
         self.endpoints = {
             'teen20': os.getenv('TEEN20_ODDS_API_URL'),
@@ -224,7 +224,7 @@ class PredictionService:
                     
                     if prediction:
                         predicted_value = prediction["predicted_value"]
-                        was_correct = actual_value == predicted_value
+                        was_correct = str(actual_value) == str(predicted_value)
                         
                         logging.info(
                             f"Verifying {endpoint_type} - MID: {result_mid}, "
@@ -243,6 +243,23 @@ class PredictionService:
                         if update_success:
                             # Save the actual result
                             self.db.insert_result(result, endpoint_type)
+                            
+                            # IMPORTANT: Record result to UltraPredictor for adaptive learning
+                            try:
+                                predictor = self.ensemble_predictors.get(endpoint_type)
+                                if predictor and hasattr(predictor, 'record_result'):
+                                    # Get recent sequence for context
+                                    recent_data = self.db.get_last_n_results(self.sequence_length + 1, endpoint_type)
+                                    if len(recent_data) > 1:
+                                        sequence = [int(d["result"]) for d in recent_data[1:]][::-1]
+                                        predictor.record_result(
+                                            sequence,
+                                            int(predicted_value),
+                                            int(actual_value)
+                                        )
+                                        logging.debug(f"Recorded result to UltraPredictor for {endpoint_type}")
+                            except Exception as e:
+                                logging.warning(f"Failed to record result to predictor: {e}")
                             
                             # Check if model needs retraining
                             self.check_and_update_model(endpoint_type)
